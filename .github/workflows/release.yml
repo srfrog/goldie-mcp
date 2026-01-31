@@ -48,8 +48,11 @@ jobs:
           name: goldie-mcp-linux-${{ matrix.arch }}
           path: goldie-mcp-linux-${{ matrix.arch }}
 
-  build-macos-arm64:
-    runs-on: macos-latest  # macos-latest is arm64
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -66,50 +69,22 @@ jobs:
       - name: Build
         env:
           CGO_ENABLED: 1
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
         run: |
-          go build -ldflags="-s -w" -o goldie-mcp-darwin-arm64 .
+          go build -ldflags="-s -w" -o goldie-mcp-darwin-${{ matrix.arch }} .
 
       - name: Codesign
-        run: codesign -s - -f goldie-mcp-darwin-arm64
+        run: codesign -s - -f goldie-mcp-darwin-${{ matrix.arch }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: goldie-mcp-darwin-arm64
-          path: goldie-mcp-darwin-arm64
-
-  build-macos-amd64:
-    runs-on: macos-13  # macos-13 is Intel
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          lfs: true
-
-      - name: Checkout LFS objects
-        run: git lfs pull
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.23'
-
-      - name: Build
-        env:
-          CGO_ENABLED: 1
-        run: |
-          go build -ldflags="-s -w" -o goldie-mcp-darwin-amd64 .
-
-      - name: Codesign
-        run: codesign -s - -f goldie-mcp-darwin-amd64
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: goldie-mcp-darwin-amd64
-          path: goldie-mcp-darwin-amd64
+          name: goldie-mcp-darwin-${{ matrix.arch }}
+          path: goldie-mcp-darwin-${{ matrix.arch }}
 
   release:
-    needs: [build-linux, build-macos-arm64, build-macos-amd64]
+    needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Checkout LFS objects
+        run: git lfs pull
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Install cross-compilation tools
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        env:
+          CGO_ENABLED: 1
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CC: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
+        run: |
+          go build -ldflags="-s -w" -o goldie-mcp-linux-${{ matrix.arch }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: goldie-mcp-linux-${{ matrix.arch }}
+          path: goldie-mcp-linux-${{ matrix.arch }}
+
+  build-macos-arm64:
+    runs-on: macos-latest  # macos-latest is arm64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Checkout LFS objects
+        run: git lfs pull
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Build
+        env:
+          CGO_ENABLED: 1
+        run: |
+          go build -ldflags="-s -w" -o goldie-mcp-darwin-arm64 .
+
+      - name: Codesign
+        run: codesign -s - -f goldie-mcp-darwin-arm64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: goldie-mcp-darwin-arm64
+          path: goldie-mcp-darwin-arm64
+
+  build-macos-amd64:
+    runs-on: macos-13  # macos-13 is Intel
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Checkout LFS objects
+        run: git lfs pull
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+
+      - name: Build
+        env:
+          CGO_ENABLED: 1
+        run: |
+          go build -ldflags="-s -w" -o goldie-mcp-darwin-amd64 .
+
+      - name: Codesign
+        run: codesign -s - -f goldie-mcp-darwin-amd64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: goldie-mcp-darwin-amd64
+          path: goldie-mcp-darwin-amd64
+
+  release:
+    needs: [build-linux, build-macos-arm64, build-macos-amd64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          # Move and make executable
+          for dir in artifacts/*/; do
+            for file in "$dir"*; do
+              if [ -f "$file" ]; then
+                chmod +x "$file"
+                mv "$file" release/
+              fi
+            done
+          done
+          # Create checksums
+          cd release
+          sha256sum * > SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}

@@ -1,0 +1,42 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+goldie-mcp
+
+# Test binary
+*.test
+
+# Coverage
+*.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# IDE
+.claude/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+__debug_bin*
+
+# Local env
+.env
+.env.local
+
+# Database
+*.db
+*.db-journal
+*.db-shm
+*.db-wal

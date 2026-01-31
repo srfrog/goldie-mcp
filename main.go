@@ -35,20 +35,6 @@ func safeJSONMarshal(v any) string {
 	return string(data)
 }
 
-type jobResponse struct {
-	ID        string    `json:"id"`
-	Type      string    `json:"type"`
-	Status    string    `json:"status"`
-	StatusRaw string    `json:"status_raw"`
-	Params    string    `json:"params"`
-	Result    string    `json:"result,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	Progress  int       `json:"progress"`
-	Total     int       `json:"total"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
 func formatMessage(format string, args ...any) string {
 	return fmt.Sprintf(statusEmoji+" "+format, args...)
 }

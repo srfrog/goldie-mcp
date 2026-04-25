@@ -14,6 +14,22 @@ A Retrieval-Augmented Generation (RAG) MCP server written in Go that runs locall
 
 ## Requirements
 
+### MiniLM Backend (requires ONNX Runtime)
+
+```bash
+# macOS
+brew install onnxruntime
+
+# Ubuntu/Debian
+sudo apt install libonnxruntime-dev
+
+# Fedora/RHEL
+sudo dnf install onnxruntime-devel
+
+# Arch Linux
+sudo pacman -S onnxruntime
+```
+
 ### Ollama Backend
 
 If you want to use Ollama instead of MiniLM, you only need Ollama installed:
@@ -30,22 +46,6 @@ ollama pull nomic-embed-text
 ```
 
 Skip the ONNX Runtime installation below if you only plan to use Ollama.
-
-### MiniLM Backend (requires ONNX Runtime)
-
-```bash
-# macOS
-brew install onnxruntime
-
-# Ubuntu/Debian
-sudo apt install libonnxruntime-dev
-
-# Fedora/RHEL
-sudo dnf install onnxruntime-devel
-
-# Arch Linux
-sudo pacman -S onnxruntime
-```
 
 ## Installation
 
@@ -117,48 +117,12 @@ For other models, set `OLLAMA_EMBED_DIMENSIONS` to the model's output dimensions
 claude mcp add -s user -e GOLDIE_DB_PATH=~/.local/share/goldie/index.db goldie /path/to/goldie-mcp
 ```
 
-Or add to `~/.claude.json`:
-
-```json
-{
-  "mcpServers": {
-    "goldie": {
-      "type": "stdio",
-      "command": "/path/to/goldie-mcp",
-      "env": {
-        "GOLDIE_DB_PATH": "/home/user/.local/share/goldie/index.db",
-        "ONNXRUNTIME_LIB_PATH": "/path/to/libonnxruntime.so"
-      }
-    }
-  }
-}
-```
-
 Note: `ONNXRUNTIME_LIB_PATH` is optional if the library is in a standard location.
 
 ### With Ollama
 
 ```bash
 claude mcp add -s user -e GOLDIE_DB_PATH=~/.local/share/goldie/index.db goldie /path/to/goldie-mcp -- -b ollama
-```
-
-Or add to `~/.claude.json`:
-
-```json
-{
-  "mcpServers": {
-    "goldie": {
-      "type": "stdio",
-      "command": "/path/to/goldie-mcp",
-      "args": ["-b", "ollama"],
-      "env": {
-        "GOLDIE_DB_PATH": "/home/user/.local/share/goldie/index.db",
-        "OLLAMA_HOST": "http://localhost:11434",
-        "OLLAMA_EMBED_MODEL": "nomic-embed-text"
-      }
-    }
-  }
-}
 ```
 
 Note: Make sure Ollama is running (`ollama serve`) before starting Claude Code.

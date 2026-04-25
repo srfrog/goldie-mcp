@@ -133,7 +133,7 @@ func (ts *TestSetup) SetupGlobals() {
 }
 
 // CallTool invokes an MCP tool handler and returns the parsed response
-func (ts *TestSetup) CallTool(t *testing.T, toolName string, args map[string]interface{}) map[string]interface{} {
+func (ts *TestSetup) CallTool(t *testing.T, toolName string, args map[string]any) map[string]any {
 	t.Helper()
 
 	req := mcp.CallToolRequest{}
@@ -181,11 +181,11 @@ func (ts *TestSetup) CallTool(t *testing.T, toolName string, args map[string]int
 		t.Fatalf("tool %s returned non-text content", toolName)
 	}
 
-	var response map[string]interface{}
+	var response map[string]any
 	if err := json.Unmarshal([]byte(textContent.Text), &response); err != nil {
 		// If not valid JSON, return a map with the text as "message"
 		// This handles plain text responses for empty results
-		return map[string]interface{}{
+		return map[string]any{
 			"message": textContent.Text,
 		}
 	}
@@ -247,7 +247,7 @@ func TestJobQueueBasicFlow(t *testing.T) {
 	}
 
 	// Verify result
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(job.Result), &result); err != nil {
 		t.Fatalf("failed to parse result: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestJobQueueDirectoryIndexing(t *testing.T) {
 	}
 
 	// Verify result
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal([]byte(job.Result), &result); err != nil {
 		t.Fatalf("failed to parse result: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestClearQueue(t *testing.T) {
 	testFile := filepath.Join(ts.TempDir, "test.txt")
 	os.WriteFile(testFile, []byte("test"), 0o644)
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := ts.Queue.EnqueueIndexFile(testFile)
 		if err != nil {
 			t.Fatalf("failed to enqueue job: %v", err)
@@ -528,7 +528,7 @@ func TestMCP_IndexFile(t *testing.T) {
 	os.WriteFile(testFile, []byte("Test content for MCP indexing"), 0o644)
 
 	// Call index_file via MCP handler
-	resp := ts.CallTool(t, "index_file", map[string]interface{}{
+	resp := ts.CallTool(t, "index_file", map[string]any{
 		"path": testFile,
 	})
 
@@ -548,7 +548,7 @@ func TestMCP_IndexFile(t *testing.T) {
 	// Wait for job to complete
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		statusResp := ts.CallTool(t, "job_status", map[string]interface{}{
+		statusResp := ts.CallTool(t, "job_status", map[string]any{
 			"id": jobID,
 		})
 		if statusResp["status"] == store.JobStatusCompleted {
@@ -558,7 +558,7 @@ func TestMCP_IndexFile(t *testing.T) {
 	}
 
 	// Verify via job_status
-	statusResp := ts.CallTool(t, "job_status", map[string]interface{}{
+	statusResp := ts.CallTool(t, "job_status", map[string]any{
 		"id": jobID,
 	})
 	if statusResp["status"] != store.JobStatusCompleted {
@@ -580,7 +580,7 @@ func TestMCP_IndexDirectory(t *testing.T) {
 	os.WriteFile(filepath.Join(testDir, "c.txt"), []byte("Document C"), 0o644)
 
 	// Call index_directory via MCP handler
-	resp := ts.CallTool(t, "index_directory", map[string]interface{}{
+	resp := ts.CallTool(t, "index_directory", map[string]any{
 		"directory": testDir,
 		"pattern":   "*.md",
 		"recursive": false,
@@ -595,7 +595,7 @@ func TestMCP_IndexDirectory(t *testing.T) {
 	// Wait for completion
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		statusResp := ts.CallTool(t, "job_status", map[string]interface{}{
+		statusResp := ts.CallTool(t, "job_status", map[string]any{
 			"id": jobID,
 		})
 		if statusResp["status"] == store.JobStatusCompleted {
@@ -605,7 +605,7 @@ func TestMCP_IndexDirectory(t *testing.T) {
 	}
 
 	// Verify result
-	statusResp := ts.CallTool(t, "job_status", map[string]interface{}{
+	statusResp := ts.CallTool(t, "job_status", map[string]any{
 		"id": jobID,
 	})
 
@@ -615,7 +615,7 @@ func TestMCP_IndexDirectory(t *testing.T) {
 
 	// Parse the result JSON
 	resultStr := statusResp["result"].(string)
-	var result map[string]interface{}
+	var result map[string]any
 	json.Unmarshal([]byte(resultStr), &result)
 
 	fileCount := int(result["file_count"].(float64))
@@ -634,11 +634,11 @@ func TestMCP_ListJobs(t *testing.T) {
 	os.WriteFile(testFile, []byte("test"), 0o644)
 
 	// Create jobs via MCP
-	ts.CallTool(t, "index_file", map[string]interface{}{"path": testFile})
-	ts.CallTool(t, "index_file", map[string]interface{}{"path": testFile})
+	ts.CallTool(t, "index_file", map[string]any{"path": testFile})
+	ts.CallTool(t, "index_file", map[string]any{"path": testFile})
 
 	// List all jobs
-	resp := ts.CallTool(t, "list_jobs", map[string]interface{}{})
+	resp := ts.CallTool(t, "list_jobs", map[string]any{})
 
 	count := int(resp["count"].(float64))
 	if count != 2 {
@@ -646,7 +646,7 @@ func TestMCP_ListJobs(t *testing.T) {
 	}
 
 	// List filtered by status
-	resp = ts.CallTool(t, "list_jobs", map[string]interface{}{
+	resp = ts.CallTool(t, "list_jobs", map[string]any{
 		"status": "queued",
 	})
 
@@ -665,12 +665,12 @@ func TestMCP_ClearQueue(t *testing.T) {
 	os.WriteFile(testFile, []byte("test"), 0o644)
 
 	// Create jobs
-	ts.CallTool(t, "index_file", map[string]interface{}{"path": testFile})
-	ts.CallTool(t, "index_file", map[string]interface{}{"path": testFile})
-	ts.CallTool(t, "index_file", map[string]interface{}{"path": testFile})
+	ts.CallTool(t, "index_file", map[string]any{"path": testFile})
+	ts.CallTool(t, "index_file", map[string]any{"path": testFile})
+	ts.CallTool(t, "index_file", map[string]any{"path": testFile})
 
 	// Clear all
-	resp := ts.CallTool(t, "clear_queue", map[string]interface{}{
+	resp := ts.CallTool(t, "clear_queue", map[string]any{
 		"status": "all",
 	})
 
@@ -684,7 +684,7 @@ func TestMCP_ClearQueue(t *testing.T) {
 	}
 
 	// Verify empty (plain text response for empty results has no "count" field)
-	listResp := ts.CallTool(t, "list_jobs", map[string]interface{}{})
+	listResp := ts.CallTool(t, "list_jobs", map[string]any{})
 	if listResp["count"] != nil && int(listResp["count"].(float64)) != 0 {
 		t.Error("expected empty job list")
 	}
@@ -703,7 +703,7 @@ func TestMCP_Search(t *testing.T) {
 	}
 
 	// Search via MCP
-	resp := ts.CallTool(t, "search_index", map[string]interface{}{
+	resp := ts.CallTool(t, "search_index", map[string]any{
 		"query": "programming",
 		"limit": float64(5),
 	})
@@ -713,7 +713,7 @@ func TestMCP_Search(t *testing.T) {
 		t.Error("expected search results")
 	}
 
-	results := resp["results"].([]interface{})
+	results := resp["results"].([]any)
 	if len(results) == 0 {
 		t.Error("expected results array")
 	}
@@ -725,7 +725,7 @@ func TestMCP_DocumentCRUD(t *testing.T) {
 	ts.SetupGlobals()
 
 	// Index content
-	resp := ts.CallTool(t, "index_content", map[string]interface{}{
+	resp := ts.CallTool(t, "index_content", map[string]any{
 		"content":  "This is test content",
 		"metadata": `{"source": "test"}`,
 	})
@@ -739,13 +739,13 @@ func TestMCP_DocumentCRUD(t *testing.T) {
 	}
 
 	// Count documents
-	countResp := ts.CallTool(t, "count_documents", map[string]interface{}{})
+	countResp := ts.CallTool(t, "count_documents", map[string]any{})
 	if int(countResp["count"].(float64)) != 1 {
 		t.Errorf("expected count=1")
 	}
 
 	// Delete document using auto-generated ID
-	delResp := ts.CallTool(t, "delete_document", map[string]interface{}{
+	delResp := ts.CallTool(t, "delete_document", map[string]any{
 		"id": docID,
 	})
 	if delResp["success"] != true {
@@ -753,7 +753,7 @@ func TestMCP_DocumentCRUD(t *testing.T) {
 	}
 
 	// Verify deleted
-	countResp = ts.CallTool(t, "count_documents", map[string]interface{}{})
+	countResp = ts.CallTool(t, "count_documents", map[string]any{})
 	if int(countResp["count"].(float64)) != 0 {
 		t.Errorf("expected count=0 after delete")
 	}

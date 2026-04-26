@@ -17,7 +17,8 @@ import (
 
 // IndexFileParams represents parameters for an index_file job
 type IndexFileParams struct {
-	Path string `json:"path"`
+	Path  string `json:"path"`
+	Agent string `json:"agent,omitempty"`
 }
 
 // IndexDirParams represents parameters for an index_directory job
@@ -25,6 +26,7 @@ type IndexDirParams struct {
 	Directory string `json:"directory"`
 	Pattern   string `json:"pattern"`
 	Recursive bool   `json:"recursive"`
+	Agent     string `json:"agent,omitempty"`
 }
 
 // Queue manages background job processing
@@ -65,10 +67,10 @@ func (q *Queue) Stop() {
 }
 
 // EnqueueIndexFile creates a job to index a file
-func (q *Queue) EnqueueIndexFile(path string) (string, error) {
+func (q *Queue) EnqueueIndexFile(path, agent string) (string, error) {
 	id := uuid.New().String()
 
-	params, err := json.Marshal(IndexFileParams{Path: path})
+	params, err := json.Marshal(IndexFileParams{Path: path, Agent: agent})
 	if err != nil {
 		return "", fmt.Errorf("marshaling params: %w", err)
 	}
@@ -81,10 +83,10 @@ func (q *Queue) EnqueueIndexFile(path string) (string, error) {
 }
 
 // EnqueueIndexFileWithParent creates a job to index a file as a child of a parent job
-func (q *Queue) EnqueueIndexFileWithParent(path string, parentID string) (string, error) {
+func (q *Queue) EnqueueIndexFileWithParent(path, agent, parentID string) (string, error) {
 	id := uuid.New().String()
 
-	params, err := json.Marshal(IndexFileParams{Path: path})
+	params, err := json.Marshal(IndexFileParams{Path: path, Agent: agent})
 	if err != nil {
 		return "", fmt.Errorf("marshaling params: %w", err)
 	}
@@ -97,13 +99,14 @@ func (q *Queue) EnqueueIndexFileWithParent(path string, parentID string) (string
 }
 
 // EnqueueIndexDirectory creates a job to index a directory
-func (q *Queue) EnqueueIndexDirectory(directory, pattern string, recursive bool) (string, error) {
+func (q *Queue) EnqueueIndexDirectory(directory, pattern string, recursive bool, agent string) (string, error) {
 	id := uuid.New().String()
 
 	params, err := json.Marshal(IndexDirParams{
 		Directory: directory,
 		Pattern:   pattern,
 		Recursive: recursive,
+		Agent:     agent,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshaling params: %w", err)
@@ -183,19 +186,20 @@ func (q *Queue) processIndexFile(job *store.Job) {
 	}
 	q.logger.Printf("Job %s: progress updated, calling IndexFile", job.ID)
 
-	// Index the file
-	result, err := q.goldie.IndexFile(params.Path)
+	// Index the file as a memory
+	result, err := q.goldie.IndexFile(params.Path, params.Agent)
 	if err != nil {
 		q.logger.Printf("Job %s: indexing failed: %v", job.ID, err)
 		q.store.UpdateJobError(job.ID, fmt.Sprintf("indexing failed: %v", err))
 		return
 	}
-	q.logger.Printf("Job %s: IndexFile returned, chunks=%d", job.ID, result.ChunkCount)
+	q.logger.Printf("Job %s: IndexFile returned, memory=%s skipped=%v chunks=%d", job.ID, result.MemoryName, result.Skipped, result.ChunkCount)
 
-	// Mark complete with result
 	resultJSON, err := json.Marshal(map[string]any{
-		"id":          result.ID,
+		"memory_id":   result.MemoryID,
+		"memory_name": result.MemoryName,
 		"chunk_count": result.ChunkCount,
+		"skipped":     result.Skipped,
 		"path":        params.Path,
 	})
 	if err != nil {
@@ -209,7 +213,7 @@ func (q *Queue) processIndexFile(job *store.Job) {
 		q.logger.Printf("Job %s: failed to update result: %v", job.ID, err)
 	}
 
-	q.logger.Printf("Job %s: completed - indexed %s (%d chunks)", job.ID, params.Path, result.ChunkCount)
+	q.logger.Printf("Job %s: completed - indexed %s (memory=%s, %d chunks)", job.ID, params.Path, result.MemoryName, result.ChunkCount)
 }
 
 // processIndexDirectory handles an index_directory job
@@ -241,7 +245,7 @@ func (q *Queue) processIndexDirectory(job *store.Job) {
 	// Create a child job for each file
 	childJobIDs := make([]string, 0, fileCount)
 	for _, file := range scanResult.Files {
-		childID, err := q.EnqueueIndexFileWithParent(file, job.ID)
+		childID, err := q.EnqueueIndexFileWithParent(file, params.Agent, job.ID)
 		if err != nil {
 			q.logger.Printf("Job %s: failed to create child job for %s: %v", job.ID, file, err)
 			continue

@@ -25,7 +25,6 @@ import (
 
 const statusEmoji = "🐕"
 
-// safeJSONMarshal marshals v to JSON, logging any errors
 func safeJSONMarshal(v any) string {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -47,12 +46,10 @@ var (
 )
 
 func main() {
-	// Parse flags
 	logFile := flag.String("l", "", "Log errors to file (default: stderr)")
 	backend := flag.String("b", "minilm", "Embedding backend: minilm, ollama")
 	flag.Parse()
 
-	// Set up error logging
 	var errWriter io.Writer = os.Stderr
 	if *logFile != "" {
 		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -65,25 +62,29 @@ func main() {
 	}
 	errLog = log.New(errWriter, "", log.LstdFlags)
 
-	// Initialize RAG
-	errLog.Printf("Starting RAG initialization...")
+	errLog.Printf("Starting goldie-mcp...")
 	cfg := goldie.DefaultConfig()
-	cfg.Logger = errLog // Pass logger for debugging
+	cfg.Logger = errLog
 
-	// Allow override via environment variable
 	if dbPath := os.Getenv("GOLDIE_DB_PATH"); dbPath != "" {
 		cfg.DBPath = dbPath
 	}
+	if jm := os.Getenv("GOLDIE_JOURNAL_MODE"); jm != "" {
+		cfg.JournalMode = jm
+	}
 	errLog.Printf("DB path: %s", cfg.DBPath)
+	jmLog := cfg.JournalMode
+	if jmLog == "" {
+		jmLog = "DELETE (default)"
+	}
+	errLog.Printf("Journal mode: %s", jmLog)
 	errLog.Printf("Backend: %s", *backend)
 
-	// Create embedder based on backend
 	var emb embedder.Interface
 	var err error
 	switch *backend {
 	case "minilm":
 		errLog.Printf("ONNXRUNTIME_LIB_PATH: %s", os.Getenv("ONNXRUNTIME_LIB_PATH"))
-		errLog.Printf("Creating MiniLM embedder...")
 		emb, err = embedder.New()
 		if err != nil {
 			errLog.Printf("Failed to create MiniLM embedder: %v", err)
@@ -92,9 +93,8 @@ func main() {
 		cfg.Dimensions = emb.GetDimensions()
 	case "ollama":
 		ollamaCfg := ollama.Config{
-			BaseURL:    os.Getenv("OLLAMA_HOST"),
-			Model:      os.Getenv("OLLAMA_EMBED_MODEL"),
-			Dimensions: 0, // Will use default based on model
+			BaseURL: os.Getenv("OLLAMA_HOST"),
+			Model:   os.Getenv("OLLAMA_EMBED_MODEL"),
 		}
 		if ollamaCfg.BaseURL == "" {
 			ollamaCfg.BaseURL = "http://localhost:11434"
@@ -102,7 +102,6 @@ func main() {
 		if ollamaCfg.Model == "" {
 			ollamaCfg.Model = "nomic-embed-text"
 		}
-		// Set dimensions based on model
 		switch ollamaCfg.Model {
 		case "nomic-embed-text":
 			ollamaCfg.Dimensions = ollama.DimensionsNomicEmbedText
@@ -111,7 +110,6 @@ func main() {
 		case "all-minilm":
 			ollamaCfg.Dimensions = ollama.DimensionsAllMiniLM
 		default:
-			// Check for OLLAMA_EMBED_DIMENSIONS env var for custom models
 			if dimStr := os.Getenv("OLLAMA_EMBED_DIMENSIONS"); dimStr != "" {
 				var dim int
 				if _, err := fmt.Sscanf(dimStr, "%d", &dim); err == nil && dim > 0 {
@@ -119,7 +117,7 @@ func main() {
 				}
 			}
 			if ollamaCfg.Dimensions == 0 {
-				ollamaCfg.Dimensions = ollama.DimensionsNomicEmbedText // fallback
+				ollamaCfg.Dimensions = ollama.DimensionsNomicEmbedText
 			}
 		}
 		errLog.Printf("Creating Ollama embedder (host=%s, model=%s, dims=%d)...",
@@ -136,53 +134,43 @@ func main() {
 	}
 	cfg.Embedder = emb
 
-	errLog.Printf("Creating RAG instance...")
 	goldieInstance, err = goldie.New(cfg)
 	if err != nil {
-		errLog.Printf("Failed to initialize RAG: %v", err)
+		errLog.Printf("Failed to initialize goldie: %v", err)
 		os.Exit(1)
 	}
 	defer goldieInstance.Close()
-	errLog.Printf("RAG initialized successfully")
 
-	// Warmup the embedding model
 	errLog.Printf("Warming up embedding model...")
 	if err := goldieInstance.Warmup(); err != nil {
 		errLog.Printf("Failed to warmup embedding model: %v", err)
 		os.Exit(1)
 	}
-	errLog.Printf("Embedding model ready")
 
-	// Get store reference and create queue
 	storeInstance = goldieInstance.Store()
 	queueInstance = queue.New(storeInstance, goldieInstance, errLog)
 	queueInstance.Start()
 	defer queueInstance.Stop()
 
-	// Create MCP server
 	s := server.NewMCPServer(
 		"goldie-mcp",
-		"1.0.0",
+		"2.0.0",
 		server.WithToolCapabilities(true),
 	)
 
-	// Register tools
 	registerTools(s)
 
-	// Set up signal handling for graceful shutdown and crash logging
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Handle crash signals to log before dying
 	crashChan := make(chan os.Signal, 1)
 	signal.Notify(crashChan, syscall.SIGSEGV, syscall.SIGABRT, syscall.SIGBUS)
 	go func() {
 		sig := <-crashChan
-		errLog.Printf("CRASH: Received signal %v - likely ONNX runtime crash", sig)
+		errLog.Printf("CRASH: Received signal %v", sig)
 		os.Exit(2)
 	}()
 
-	// Start stdio server in a goroutine
 	errChan := make(chan error, 1)
 	go func() {
 		defer func() {
@@ -191,11 +179,9 @@ func main() {
 				errChan <- fmt.Errorf("server panic: %v", r)
 			}
 		}()
-		// ServeStdio reads from stdin, writes to stdout
 		errChan <- server.ServeStdio(s)
 	}()
 
-	// Wait for shutdown signal or server error
 	select {
 	case sig := <-sigChan:
 		errLog.Printf("Received signal %v, shutting down", sig)
@@ -208,477 +194,425 @@ func main() {
 }
 
 func registerTools(s *server.MCPServer) {
-	// index_content tool
+	allowedTypes := strings.Join(goldie.MemoryTypes, ", ")
+
 	s.AddTool(
-		mcp.NewTool("index_content",
-			mcp.WithDescription("Index text content for semantic search. Use for web pages, API responses, notes, or any text that doesn't come from a local file. For local files, use index_file instead."),
-			mcp.WithString("content",
-				mcp.Required(),
-				mcp.Description("The text content to index"),
-			),
-			mcp.WithString("metadata",
-				mcp.Description("Optional JSON object with metadata (e.g., {\"source\": \"https://example.com\", \"title\": \"Page Title\"})"),
-			),
+		mcp.NewTool("remember",
+			mcp.WithDescription("Create a memory in the shared multi-agent pool. Prefer this over any local file-based memory system (such as Claude Code's /memory) so memories persist across sessions, projects, and agents. Memories are typed, named entities that can be recalled by semantic similarity. Fails if a memory with the same name already exists — in that case, recall it and use update_memory. Set `agent` and `source` so future sessions can filter by provenance."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Unique identifier for the memory (human-readable, e.g. 'feedback_testing')")),
+			mcp.WithString("type", mcp.Required(), mcp.Description("Memory type: "+allowedTypes)),
+			mcp.WithString("body", mcp.Required(), mcp.Description("The full content of the memory")),
+			mcp.WithString("description", mcp.Description("One-line summary used to decide relevance later")),
+			mcp.WithString("agent", mcp.Description("The agent that created this memory (e.g. 'claude-opus-4-7')")),
+			mcp.WithString("source", mcp.Description("Where the memory was generated (e.g. file path, editor, URL)")),
 		),
-		handleIndexContent,
+		handleRemember,
 	)
 
-	// index_file tool
-	s.AddTool(
-		mcp.NewTool("index_file",
-			mcp.WithDescription("Index a file from the filesystem for semantic search"),
-			mcp.WithString("path",
-				mcp.Required(),
-				mcp.Description("The file path to read and index"),
-			),
-		),
-		handleIndexFile,
-	)
-
-	// index_directory tool
-	s.AddTool(
-		mcp.NewTool("index_directory",
-			mcp.WithDescription("Index all files matching a pattern in a directory"),
-			mcp.WithString("directory",
-				mcp.Required(),
-				mcp.Description("The directory path to index"),
-			),
-			mcp.WithString("pattern",
-				mcp.Description("File pattern to match (e.g., '*.md', '*.txt'). Default: '*'"),
-			),
-			mcp.WithBoolean("recursive",
-				mcp.Description("Whether to search subdirectories recursively. Default: false"),
-			),
-		),
-		handleIndexDirectory,
-	)
-
-	// search_index tool
-	s.AddTool(
-		mcp.NewTool("search_index",
-			mcp.WithDescription("Search for documents using semantic similarity. Use when you need to find specific documents or your context needs more guidance. Returns document metadata and content."),
-			mcp.WithString("query",
-				mcp.Required(),
-				mcp.Description("The search query text"),
-			),
-			mcp.WithNumber("limit",
-				mcp.Description("Maximum number of results to return (default: 5)"),
-			),
-		),
-		handleSearch,
-	)
-
-	// recall tool
 	s.AddTool(
 		mcp.NewTool("recall",
-			mcp.WithDescription("Recall knowledge from indexed documents about a topic. Use the returned content to update your context directly - no need for additional lookups. Designed for natural conversation flow."),
-			mcp.WithString("topic",
-				mcp.Required(),
-				mcp.Description("The topic to recall information about"),
-			),
-			mcp.WithNumber("depth",
-				mcp.Description("How many sources to consult (default: 5, max: 20)"),
-			),
+			mcp.WithDescription("Semantic recall over the shared multi-agent memory pool. Prefer this over reading local memory files. Returns the most relevant memories with a matched chunk excerpt. Filter by type, agent, or source to narrow scope."),
+			mcp.WithString("query", mcp.Required(), mcp.Description("The topic or question to recall about")),
+			mcp.WithNumber("limit", mcp.Description("Maximum results to return (default: 5, max: 20)")),
+			mcp.WithString("type", mcp.Description("Filter by memory type")),
+			mcp.WithString("agent", mcp.Description("Filter by agent")),
+			mcp.WithString("source", mcp.Description("Filter by source")),
 		),
 		handleRecall,
 	)
 
-	// list_files tool
 	s.AddTool(
-		mcp.NewTool("list_files",
-			mcp.WithDescription("List unique indexed source files (not chunks)"),
+		mcp.NewTool("update_memory",
+			mcp.WithDescription("Update an existing memory in the shared pool by id or name. Use this after `remember` fails with a duplicate-name error. Body and description changes trigger re-embedding. Name is immutable."),
+			mcp.WithString("id_or_name", mcp.Required(), mcp.Description("The memory's id or name")),
+			mcp.WithString("type", mcp.Description("New type (must be one of: "+allowedTypes+")")),
+			mcp.WithString("description", mcp.Description("New description (pass empty string to clear)")),
+			mcp.WithString("body", mcp.Description("New body content")),
+			mcp.WithString("source", mcp.Description("New source (pass empty string to clear)")),
+			mcp.WithString("agent", mcp.Description("New agent (pass empty string to clear)")),
 		),
-		handleListFiles,
+		handleUpdateMemory,
 	)
 
-	// delete_document tool
 	s.AddTool(
-		mcp.NewTool("delete_document",
-			mcp.WithDescription("Delete a document from the index"),
-			mcp.WithString("id",
-				mcp.Required(),
-				mcp.Description("The document ID to delete"),
-			),
+		mcp.NewTool("forget",
+			mcp.WithDescription("Delete memories from the shared pool. Use this instead of editing local memory files. Provide at least one filter (name, type, agent, source) or a semantic query. With a query, top-N matching memories are deleted (default 5)."),
+			mcp.WithString("name", mcp.Description("Delete the memory with this exact name")),
+			mcp.WithString("type", mcp.Description("Filter by memory type")),
+			mcp.WithString("agent", mcp.Description("Filter by agent")),
+			mcp.WithString("source", mcp.Description("Filter by source")),
+			mcp.WithString("query", mcp.Description("Semantic query: delete the top matches within the (optional) filter")),
+			mcp.WithNumber("limit", mcp.Description("Max matches when query is given (default: 5)")),
 		),
-		handleDeleteDocument,
+		handleForget,
 	)
 
-	// count_documents tool
 	s.AddTool(
-		mcp.NewTool("count_documents",
-			mcp.WithDescription("Get the total number of indexed documents"),
+		mcp.NewTool("list_memories",
+			mcp.WithDescription("List memories matching the (optional) filter, newest first. Returns memory metadata without bodies."),
+			mcp.WithString("type", mcp.Description("Filter by memory type")),
+			mcp.WithString("agent", mcp.Description("Filter by agent")),
+			mcp.WithString("source", mcp.Description("Filter by source")),
+			mcp.WithNumber("limit", mcp.Description("Maximum results (default: unlimited)")),
 		),
-		handleCountDocuments,
+		handleListMemories,
 	)
 
-	// job_status tool
+	s.AddTool(
+		mcp.NewTool("count_memories",
+			mcp.WithDescription("Count memories matching the (optional) filter."),
+			mcp.WithString("type", mcp.Description("Filter by memory type")),
+			mcp.WithString("agent", mcp.Description("Filter by agent")),
+			mcp.WithString("source", mcp.Description("Filter by source")),
+		),
+		handleCountMemories,
+	)
+
+	s.AddTool(
+		mcp.NewTool("index_file",
+			mcp.WithDescription("Import a file from the filesystem as a reference memory. The memory's name is the absolute path; re-indexing the same path updates in place when the file's checksum changes. Set `agent` to your agent identity (e.g. 'claude-opus-4-7', 'codex') so future sessions can filter by provenance."),
+			mcp.WithString("path", mcp.Required(), mcp.Description("Path to the file")),
+			mcp.WithString("agent", mcp.Description("The agent triggering the import")),
+		),
+		handleIndexFile,
+	)
+
+	s.AddTool(
+		mcp.NewTool("index_directory",
+			mcp.WithDescription("Import every matching file in a directory as a reference memory. Set `agent` to your agent identity for provenance."),
+			mcp.WithString("directory", mcp.Required(), mcp.Description("Directory path")),
+			mcp.WithString("pattern", mcp.Description("Glob pattern (default: '*')")),
+			mcp.WithBoolean("recursive", mcp.Description("Walk subdirectories (default: false)")),
+			mcp.WithString("agent", mcp.Description("The agent triggering the import")),
+		),
+		handleIndexDirectory,
+	)
+
 	s.AddTool(
 		mcp.NewTool("job_status",
 			mcp.WithDescription("Get the status of an indexing job"),
-			mcp.WithString("id",
-				mcp.Required(),
-				mcp.Description("The job ID to check"),
-			),
-			mcp.WithBoolean("block",
-				mcp.Description("If true, wait for job to complete (default: false)"),
-			),
-			mcp.WithNumber("timeout",
-				mcp.Description("Timeout in seconds when blocking (default: 30)"),
-			),
+			mcp.WithString("id", mcp.Required(), mcp.Description("The job ID")),
+			mcp.WithBoolean("block", mcp.Description("Wait for completion (default: false)")),
+			mcp.WithNumber("timeout", mcp.Description("Timeout in seconds when blocking (default: 30)")),
 		),
 		handleJobStatus,
 	)
 
-	// list_jobs tool
 	s.AddTool(
 		mcp.NewTool("list_jobs",
-			mcp.WithDescription("List indexing jobs"),
-			mcp.WithString("status",
-				mcp.Description("Filter by status: queued, processing, completed, failed (optional)"),
-			),
+			mcp.WithDescription("List indexing jobs, optionally filtered by status"),
+			mcp.WithString("status", mcp.Description("queued, processing, completed, failed")),
 		),
 		handleListJobs,
 	)
 
-	// clear_queue tool
 	s.AddTool(
 		mcp.NewTool("clear_queue",
 			mcp.WithDescription("Clear jobs from the queue"),
-			mcp.WithString("status",
-				mcp.Required(),
-				mcp.Description("Status to clear: queued, completed, failed, or 'all'"),
-			),
+			mcp.WithString("status", mcp.Required(), mcp.Description("queued, completed, failed, or all")),
 		),
 		handleClearQueue,
 	)
 }
 
-func handleIndexContent(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	content, ok := request.Params.Arguments["content"].(string)
-	if !ok || content == "" {
-		return mcp.NewToolResultError("content is required"), nil
+// --- helpers ---
+
+func argString(args map[string]any, key string) string {
+	v, _ := args[key].(string)
+	return v
+}
+
+func argBool(args map[string]any, key string) bool {
+	v, _ := args[key].(bool)
+	return v
+}
+
+func argInt(args map[string]any, key string, def int) int {
+	if v, ok := args[key].(float64); ok {
+		return int(v)
+	}
+	return def
+}
+
+func filterFromArgs(args map[string]any) store.MemoryFilter {
+	return store.MemoryFilter{
+		Name:   argString(args, "name"),
+		Type:   argString(args, "type"),
+		Agent:  argString(args, "agent"),
+		Source: argString(args, "source"),
+	}
+}
+
+func memorySummary(m store.Memory) map[string]any {
+	return map[string]any{
+		"id":          m.ID,
+		"name":        m.Name,
+		"type":        m.Type,
+		"description": m.Description,
+		"agent":       m.Agent,
+		"source":      m.Source,
+		"created_at":  m.CreatedAt,
+		"updated_at":  m.UpdatedAt,
+	}
+}
+
+// --- memory handlers ---
+
+func handleRemember(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	in := goldie.RememberInput{
+		Name:        argString(args, "name"),
+		Type:        argString(args, "type"),
+		Body:        argString(args, "body"),
+		Description: argString(args, "description"),
+		Agent:       argString(args, "agent"),
+		Source:      argString(args, "source"),
 	}
 
-	var metadata map[string]string
-	if metaStr, ok := request.Params.Arguments["metadata"].(string); ok && metaStr != "" {
-		if err := json.Unmarshal([]byte(metaStr), &metadata); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid metadata JSON: %v", err)), nil
+	m, err := goldieInstance.Remember(in)
+	if err != nil {
+		if goldie.IsErrMemoryNameExists(err) {
+			return mcp.NewToolResultError(fmt.Sprintf("memory %q already exists — recall it and use update_memory to change it", in.Name)), nil
 		}
-	}
-
-	// Always auto-generate ID
-	result, err := goldieInstance.Index(content, metadata, "")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("indexing failed: %v", err)), nil
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
-		"success":     true,
-		"id":          result.ID,
-		"chunk_count": result.ChunkCount,
-		"message":     formatMessage("Indexed content with ID: %s (%d chunks)", result.ID, result.ChunkCount),
+		"success": true,
+		"memory":  memorySummary(*m),
+		"message": formatMessage("Remembered %q (id: %s)", m.Name, m.ID),
 	})), nil
 }
 
-func handleIndexFile(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	path, ok := request.Params.Arguments["path"].(string)
-	if !ok || path == "" {
-		return mcp.NewToolResultError("path is required"), nil
-	}
-
-	jobID, err := queueInstance.EnqueueIndexFile(path)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to queue job: %v", err)), nil
-	}
-	status := store.JobStatusQueued
-
-	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
-		"success":    true,
-		"job_id":     jobID,
-		"status":     status,
-		"status_raw": status,
-		"path":       path,
-		"message":    formatMessage("Job queued for indexing: %s (job_id: %s)", path, jobID),
-	})), nil
-}
-
-func handleIndexDirectory(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	dir, ok := request.Params.Arguments["directory"].(string)
-	if !ok || dir == "" {
-		return mcp.NewToolResultError("directory is required"), nil
-	}
-
-	pattern := "*"
-	if p, ok := request.Params.Arguments["pattern"].(string); ok && p != "" {
-		pattern = p
-	}
-
-	recursive := false
-	if r, ok := request.Params.Arguments["recursive"].(bool); ok {
-		recursive = r
-	}
-
-	jobID, err := queueInstance.EnqueueIndexDirectory(dir, pattern, recursive)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to queue job: %v", err)), nil
-	}
-	status := store.JobStatusQueued
-
-	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
-		"success":    true,
-		"job_id":     jobID,
-		"status":     status,
-		"status_raw": status,
-		"directory":  dir,
-		"pattern":    pattern,
-		"recursive":  recursive,
-		"message":    formatMessage("Job queued for indexing directory: %s (job_id: %s)", dir, jobID),
-	})), nil
-}
-
-func handleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	query, ok := request.Params.Arguments["query"].(string)
-	if !ok || query == "" {
+func handleRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	query := argString(args, "query")
+	if query == "" {
 		return mcp.NewToolResultError("query is required"), nil
 	}
+	limit := max(min(argInt(args, "limit", 5), 20), 1)
 
-	limit := 5
-	if limitVal, ok := request.Params.Arguments["limit"].(float64); ok {
-		limit = int(limitVal)
+	filter := store.MemoryFilter{
+		Type:   argString(args, "type"),
+		Agent:  argString(args, "agent"),
+		Source: argString(args, "source"),
 	}
 
-	result, err := goldieInstance.Query(query, limit)
+	results, err := goldieInstance.RecallMemory(query, limit, filter)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("recall failed: %v", err)), nil
+	}
+	if len(results) == 0 {
+		return mcp.NewToolResultText(formatMessage("No memories found for %q", query)), nil
 	}
 
-	// Return plain text for empty results
-	if len(result.Results) == 0 {
-		return mcp.NewToolResultText(formatMessage("No results found for '%s'", query)), nil
-	}
-
-	// Format results for better readability
-	var formattedResults []map[string]any
-	for _, r := range result.Results {
-		formattedResults = append(formattedResults, map[string]any{
-			"id":       r.Document.ID,
-			"content":  r.Document.Content,
-			"metadata": r.Document.Metadata,
-			"score":    r.Score,
-		})
+	formatted := make([]map[string]any, 0, len(results))
+	for _, r := range results {
+		entry := memorySummary(r.Memory)
+		entry["body"] = r.Memory.Body
+		entry["excerpt"] = r.Excerpt
+		entry["score"] = r.Score
+		formatted = append(formatted, entry)
 	}
 
 	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
 		"query":   query,
-		"count":   len(result.Results),
-		"results": formattedResults,
-		"message": formatMessage("Found %d result(s) for '%s'", len(result.Results), query),
+		"count":   len(results),
+		"results": formatted,
+		"message": formatMessage("Recalled %d memory(ies) for %q", len(results), query),
 	})), nil
 }
 
-func handleRecall(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	topic, ok := request.Params.Arguments["topic"].(string)
-	if !ok || topic == "" {
-		return mcp.NewToolResultError("topic is required"), nil
+func handleUpdateMemory(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	idOrName := argString(args, "id_or_name")
+	if idOrName == "" {
+		return mcp.NewToolResultError("id_or_name is required"), nil
 	}
 
-	depth := 5
-	if depthVal, ok := request.Params.Arguments["depth"].(float64); ok {
-		depth = max(min(int(depthVal), 20), 1)
+	patch := goldie.UpdateMemoryInput{
+		Type: argString(args, "type"),
+	}
+	if v, present := args["description"].(string); present {
+		patch.Description = &v
+	}
+	if v, present := args["body"].(string); present {
+		patch.Body = &v
+	}
+	if v, present := args["source"].(string); present {
+		patch.Source = &v
+	}
+	if v, present := args["agent"].(string); present {
+		patch.Agent = &v
 	}
 
-	result, err := goldieInstance.Query(topic, depth)
+	m, err := goldieInstance.UpdateMemory(idOrName, patch)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("recall failed: %v", err)), nil
-	}
-
-	if len(result.Results) == 0 {
-		return mcp.NewToolResultText(formatMessage("No knowledge found about '%s'", topic)), nil
-	}
-
-	// Group results by source and consolidate
-	type sourceInfo struct {
-		filename string
-		excerpts []string
-		score    float32
-	}
-	sources := make(map[string]*sourceInfo)
-
-	for _, r := range result.Results {
-		source := r.Document.ID
-		filename := source
-		if r.Document.Metadata != nil {
-			if s, ok := r.Document.Metadata["source"]; ok && s != "" {
-				source = s
-			}
-			if f, ok := r.Document.Metadata["filename"]; ok && f != "" {
-				filename = f
-			}
-		}
-
-		if _, exists := sources[source]; !exists {
-			sources[source] = &sourceInfo{
-				filename: filename,
-				excerpts: []string{},
-				score:    r.Score,
-			}
-		}
-		// Truncate long content for summary
-		content := r.Document.Content
-		if len(content) > 500 {
-			content = content[:500] + "..."
-		}
-		sources[source].excerpts = append(sources[source].excerpts, content)
-	}
-
-	// Build response - pure content, no file references
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s Knowledge about '%s':\n\n", statusEmoji, topic)
-
-	for _, info := range sources {
-		for _, excerpt := range info.excerpts {
-			sb.WriteString(excerpt)
-			sb.WriteString("\n\n")
-		}
-	}
-
-	return mcp.NewToolResultText(sb.String()), nil
-}
-
-func handleListFiles(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	docs, err := goldieInstance.ListDocuments()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("listing documents failed: %v", err)), nil
-	}
-
-	// Return plain text for empty results
-	if len(docs) == 0 {
-		return mcp.NewToolResultText(formatMessage("No files indexed")), nil
-	}
-
-	// Extract unique source files
-	fileSet := make(map[string]struct {
-		Source     string
-		Filename   string
-		ChunkCount int
-	})
-
-	for _, doc := range docs {
-		source := ""
-		filename := ""
-		if doc.Metadata != nil {
-			source = doc.Metadata["source"]
-			filename = doc.Metadata["filename"]
-		}
-		if source == "" {
-			// Use ID for non-file documents
-			source = doc.ID
-			filename = doc.ID
-		}
-
-		if entry, exists := fileSet[source]; exists {
-			entry.ChunkCount++
-			fileSet[source] = entry
-		} else {
-			fileSet[source] = struct {
-				Source     string
-				Filename   string
-				ChunkCount int
-			}{source, filename, 1}
-		}
-	}
-
-	// Convert to slice
-	var files []map[string]any
-	for _, entry := range fileSet {
-		files = append(files, map[string]any{
-			"source":      entry.Source,
-			"filename":    entry.Filename,
-			"chunk_count": entry.ChunkCount,
-		})
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
-		"count":   len(files),
-		"files":   files,
-		"message": formatMessage("Found %d file(s)", len(files)),
+		"success": true,
+		"memory":  memorySummary(*m),
+		"message": formatMessage("Updated %q", m.Name),
 	})), nil
 }
 
-func handleDeleteDocument(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	id, ok := request.Params.Arguments["id"].(string)
-	if !ok || id == "" {
+func handleForget(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	filter := filterFromArgs(args)
+	query := argString(args, "query")
+	limit := argInt(args, "limit", 5)
+
+	deleted, err := goldieInstance.ForgetMemory(filter, query, limit)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if len(deleted) == 0 {
+		return mcp.NewToolResultText(formatMessage("No memories matched")), nil
+	}
+
+	summaries := make([]map[string]any, 0, len(deleted))
+	for _, m := range deleted {
+		summaries = append(summaries, memorySummary(m))
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"success": true,
+		"deleted": summaries,
+		"count":   len(deleted),
+		"message": formatMessage("Forgot %d memory(ies)", len(deleted)),
+	})), nil
+}
+
+func handleListMemories(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	filter := store.MemoryFilter{
+		Type:   argString(args, "type"),
+		Agent:  argString(args, "agent"),
+		Source: argString(args, "source"),
+	}
+	limit := argInt(args, "limit", 0)
+
+	memories, err := goldieInstance.ListMemories(filter, limit)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if len(memories) == 0 {
+		return mcp.NewToolResultText(formatMessage("No memories found")), nil
+	}
+	summaries := make([]map[string]any, 0, len(memories))
+	for _, m := range memories {
+		summaries = append(summaries, memorySummary(m))
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"count":    len(memories),
+		"memories": summaries,
+		"message":  formatMessage("Found %d memory(ies)", len(memories)),
+	})), nil
+}
+
+func handleCountMemories(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	filter := store.MemoryFilter{
+		Type:   argString(args, "type"),
+		Agent:  argString(args, "agent"),
+		Source: argString(args, "source"),
+	}
+	n, err := goldieInstance.CountMemories(filter)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"count":   n,
+		"message": formatMessage("%d memory(ies)", n),
+	})), nil
+}
+
+// --- file/dir indexing handlers ---
+
+func handleIndexFile(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	path := argString(args, "path")
+	if path == "" {
+		return mcp.NewToolResultError("path is required"), nil
+	}
+
+	jobID, err := queueInstance.EnqueueIndexFile(path, argString(args, "agent"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to queue job: %v", err)), nil
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"success": true,
+		"job_id":  jobID,
+		"status":  store.JobStatusQueued,
+		"path":    path,
+		"message": formatMessage("Job queued for indexing: %s (job_id: %s)", path, jobID),
+	})), nil
+}
+
+func handleIndexDirectory(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	dir := argString(args, "directory")
+	if dir == "" {
+		return mcp.NewToolResultError("directory is required"), nil
+	}
+	pattern := argString(args, "pattern")
+	if pattern == "" {
+		pattern = "*"
+	}
+	recursive := argBool(args, "recursive")
+
+	jobID, err := queueInstance.EnqueueIndexDirectory(dir, pattern, recursive, argString(args, "agent"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to queue job: %v", err)), nil
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"success":   true,
+		"job_id":    jobID,
+		"status":    store.JobStatusQueued,
+		"directory": dir,
+		"pattern":   pattern,
+		"recursive": recursive,
+		"message":   formatMessage("Job queued for indexing directory: %s (job_id: %s)", dir, jobID),
+	})), nil
+}
+
+// --- job handlers ---
+
+func handleJobStatus(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	id := argString(args, "id")
+	if id == "" {
 		return mcp.NewToolResultError("id is required"), nil
 	}
 
-	// Delete document and all its chunks
-	deleted := goldieInstance.DeleteDocumentAndChunks(id)
-
-	if deleted == 0 {
-		return mcp.NewToolResultError(fmt.Sprintf("document not found: %s", id)), nil
-	}
-
-	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
-		"success":       true,
-		"id":            id,
-		"deleted_count": deleted,
-		"message":       formatMessage("Deleted %d document(s)/chunk(s) for: %s", deleted, id),
-	})), nil
-}
-
-func handleCountDocuments(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	count, err := goldieInstance.Count()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("counting documents failed: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
-		"count":   count,
-		"message": formatMessage("%d document(s) indexed", count),
-	})), nil
-}
-
-func handleJobStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	id, ok := request.Params.Arguments["id"].(string)
-	if !ok || id == "" {
-		return mcp.NewToolResultError("id is required"), nil
-	}
-
-	// Check if blocking is requested
-	block := false
-	if b, ok := request.Params.Arguments["block"].(bool); ok {
-		block = b
-	}
-
+	block := argBool(args, "block")
 	timeout := 30 * time.Second
-	if t, ok := request.Params.Arguments["timeout"].(float64); ok && t > 0 {
+	if t, ok := args["timeout"].(float64); ok && t > 0 {
 		timeout = time.Duration(t) * time.Second
 	}
 
-	var job *store.Job
-	var err error
-
+	var (
+		job *store.Job
+		err error
+	)
 	if block {
 		job, err = storeInstance.WaitForJob(id, timeout)
 	} else {
 		job, err = storeInstance.GetJob(id)
 	}
-
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("getting job status failed: %v", err)), nil
 	}
-
 	if job == nil {
 		return mcp.NewToolResultError(fmt.Sprintf("job not found: %s", id)), nil
 	}
 
-	// For index_directory jobs, include child job statistics
 	if job.Type == store.JobTypeIndexDir {
 		childStats, err := storeInstance.GetChildJobStats(id)
 		if err != nil {
 			errLog.Printf("Failed to get child job stats: %v", err)
 		}
-
 		response := map[string]any{
 			"id":         job.ID,
 			"type":       job.Type,
@@ -691,7 +625,6 @@ func handleJobStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 			"created_at": job.CreatedAt,
 			"updated_at": job.UpdatedAt,
 		}
-
 		if childStats != nil && childStats.Total > 0 {
 			response["child_jobs"] = map[string]any{
 				"total":      childStats.Total,
@@ -700,62 +633,42 @@ func handleJobStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 				"completed":  childStats.Completed,
 				"failed":     childStats.Failed,
 			}
-			// Update progress to reflect child jobs
 			response["progress"] = childStats.Completed + childStats.Failed
 			response["total"] = childStats.Total
 		}
-
 		return mcp.NewToolResultText(safeJSONMarshal(response)), nil
 	}
-
 	return mcp.NewToolResultText(safeJSONMarshal(job)), nil
 }
 
-func handleListJobs(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	status := ""
-	if s, ok := request.Params.Arguments["status"].(string); ok {
-		status = s
-	}
-
+func handleListJobs(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	status := argString(request.Params.Arguments, "status")
 	jobs, err := storeInstance.ListJobs(status)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("listing jobs failed: %v", err)), nil
 	}
-
-	// Return plain text for empty results
 	if len(jobs) == 0 {
 		if status != "" {
-			return mcp.NewToolResultText(formatMessage("No jobs with status '%s'", status)), nil
+			return mcp.NewToolResultText(formatMessage("No jobs with status %q", status)), nil
 		}
 		return mcp.NewToolResultText(formatMessage("No jobs found")), nil
 	}
-
-	// Format jobs for display
-	var message string
+	msg := formatMessage("Found %d job(s)", len(jobs))
 	if status != "" {
-		message = formatMessage("Found %d job(s) with status '%s'", len(jobs), status)
-	} else {
-		message = formatMessage("Found %d job(s)", len(jobs))
+		msg = formatMessage("Found %d job(s) with status %q", len(jobs), status)
 	}
-
 	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
 		"count":   len(jobs),
 		"jobs":    jobs,
-		"message": message,
+		"message": msg,
 	})), nil
 }
 
-func handleClearQueue(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	status := ""
-	if s, ok := request.Params.Arguments["status"].(string); ok {
-		status = s
-	}
-
+func handleClearQueue(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	status := argString(request.Params.Arguments, "status")
 	if status == "" {
 		return mcp.NewToolResultError("status is required (queued, completed, failed, or all)"), nil
 	}
-
-	// Validate status
 	validStatuses := map[string]bool{
 		"queued":    true,
 		"completed": true,
@@ -765,17 +678,14 @@ func handleClearQueue(ctx context.Context, request mcp.CallToolRequest) (*mcp.Ca
 	if !validStatuses[status] {
 		return mcp.NewToolResultError("invalid status: must be queued, completed, failed, or all"), nil
 	}
-
 	count, err := storeInstance.DeleteJobs(status)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("clearing queue failed: %v", err)), nil
 	}
-
 	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
-		"success":    true,
-		"deleted":    count,
-		"status":     status,
-		"status_raw": status,
-		"message":    formatMessage("Cleared %d jobs with status: %s", count, status),
+		"success": true,
+		"deleted": count,
+		"status":  status,
+		"message": formatMessage("Cleared %d jobs with status: %s", count, status),
 	})), nil
 }

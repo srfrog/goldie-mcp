@@ -1,64 +1,61 @@
-.PHONY: build clean test run deps
+.PHONY: help build release build-linux build-darwin deps run clean test fmt lint install
 
 BINARY_NAME=goldie-mcp
 BUILD_DIR=build
 UNAME_S := $(shell uname -s)
+
+# Show this help when `make` is run with no arguments.
+.DEFAULT_GOAL := help
 
 # Ad-hoc codesign on macOS to avoid Gatekeeper killing the binary
 define codesign_macos
 	$(if $(filter Darwin,$(UNAME_S)),codesign -s - -f $(1),)
 endef
 
-# Build with CGO for sqlite-vec
-build:
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*?## "; printf "Goldie MCP — make targets\n\nUsage: make <target>\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+build: ## Build the goldie-mcp binary in the project root (CGO + ad-hoc codesign on macOS)
 	CGO_ENABLED=1 go build -o $(BINARY_NAME) .
 	$(call codesign_macos,$(BINARY_NAME))
 
-# Build for release (with optimizations)
-release:
+release: ## Build with optimizations (-s -w) for smaller binaries
 	CGO_ENABLED=1 go build -ldflags="-s -w" -o $(BINARY_NAME) .
 	$(call codesign_macos,$(BINARY_NAME))
 
-# Build for specific platforms (requires cross-compilation toolchain)
-build-linux:
+build-linux: ## Cross-compile for Linux amd64 into ./build/
 	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 .
 
-build-darwin:
+build-darwin: ## Cross-compile for macOS (amd64 + arm64) into ./build/
 	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 .
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 .
 	$(call codesign_macos,$(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64)
 	$(call codesign_macos,$(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64)
 
-# Get dependencies
-deps:
+deps: ## Download and tidy Go module dependencies
 	go mod download
 	go mod tidy
 
-# Run the server (for testing)
-run:
+run: ## Run the server in the foreground (for ad-hoc testing)
 	CGO_ENABLED=1 go run .
 
-# Clean build artifacts
-clean:
+clean: ## Remove built binaries and the build/ directory
 	rm -f $(BINARY_NAME)
 	rm -rf $(BUILD_DIR)
 
-# Run tests
-test:
+test: ## Run the test suite with -race
 	CGO_ENABLED=1 go test -v -race ./...
 
-# Format code
-fmt:
+fmt: ## Format Go sources
 	go fmt ./...
 
-# Lint code
-lint:
+lint: ## Run golangci-lint
 	golangci-lint run
 
-# Install the binary to GOPATH/bin, or,
-# install to a specific directory (avoids xattr issues on macOS)
+# Install the binary to GOPATH/bin, or install to a specific directory
+# (avoids macOS xattr issues from copying signed binaries around).
 # Usage: make install DEST=~/bin
-install:
+install: ## Install to GOPATH/bin, or to DEST=<dir> (recommended on macOS)
 ifndef DEST
 	@echo "Installing to GOPATH/bin ..."
 	CGO_ENABLED=1 go install .

@@ -1,16 +1,15 @@
 # Goldie 🐕
 
-A Retrieval-Augmented Generation (RAG) MCP server written in Go that runs locally in your machine.
+A multi-agent memory MCP server written in Go that runs locally on your machine. Goldie stores typed, named **memories** in a shared SQLite vector index so multiple agents (Claude, Codex, etc.) can `remember`, `recall`, `update_memory`, and `forget` from one pool — replacing per-project `MEMORY.md` files with a backend they can all share.
 
 ## Features
 
-- **Multiple embedding backends**: Choose between MiniLM (local, via ONNX Runtime) or Ollama
-- **Local embeddings**: Uses [all-MiniLM-L6-v2] model for high-quality semantic embeddings (384 dimensions)
-- **Ollama support**: Use any Ollama embedding model (nomic-embed-text, mxbai-embed-large, etc.)
-- **SQLite vector storage**: Persistent storage using sqlite-vec extension
-- **Document chunking**: Automatically chunks large documents with overlap
-- **Semantic search**: Find relevant documents using vector similarity
-- **Directory indexing**: Batch index files with glob patterns, supports recursive search
+- **Typed memories**: Each memory has a type (`user`, `feedback`, `project`, `reference`, `opinion`, `idea`, `todo`, `reminder`), a unique name, optional description, body, agent, and source
+- **Shared pool**: Scope is a SQLite file — point any number of agents at the same DB and they share memory
+- **Semantic recall**: Filtered KNN over chunk embeddings; recall returns the parent memory plus the matched excerpt
+- **Multiple embedding backends**: MiniLM (local via ONNX Runtime) or Ollama (any embedding model)
+- **File ingestion**: `index_file` / `index_directory` import files as `reference` memories named by absolute path (checksum-gated upsert)
+- **Async job queue**: Long-running indexing operations run in the background with progress tracking
 
 ## Requirements
 
@@ -94,6 +93,7 @@ make build
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GOLDIE_DB_PATH` | Path to SQLite database | `~/.local/share/goldie/index.db` |
+| `GOLDIE_JOURNAL_MODE` | SQLite journal_mode PRAGMA. Default is safe for cloud-synced storage. Set `WAL` for local-only DBs to enable read-during-write concurrency | `DELETE` |
 | `ONNXRUNTIME_LIB_PATH` | Path to libonnxruntime shared library (MiniLM only) | Auto-detected |
 | `OLLAMA_HOST` | Ollama API base URL (Ollama only) | `http://localhost:11434` |
 | `OLLAMA_EMBED_MODEL` | Ollama embedding model name (Ollama only) | `nomic-embed-text` |
@@ -196,58 +196,98 @@ GOLDIE_DB_PATH = "/home/user/.local/share/goldie/index.db"
 OLLAMA_EMBED_MODEL = "nomic-embed-text"
 ```
 
+## Memory Model
+
+Goldie's index is a flat pool of **memories**. Each memory has these fields:
+
+| Field         | Required | Notes                                                                 |
+|---------------|----------|-----------------------------------------------------------------------|
+| `name`        | yes      | Unique within the database. Names collide → `remember` fails (see below) |
+| `type`        | yes      | One of: `user`, `feedback`, `project`, `reference`, `opinion`, `idea`, `todo`, `reminder` |
+| `body`        | yes      | The full content. Chunked under the hood for embedding-level recall   |
+| `description` | no       | One-line summary; participates in semantic recall                     |
+| `agent`       | no       | The agent that created the memory (e.g. `claude-opus-4-7`, `codex`)   |
+| `source`      | no       | Where the memory came from (file path, editor, URL)                   |
+
+**Sharing.** "Scope" is just the SQLite file. Multiple agents pointed at the same `GOLDIE_DB_PATH` share the same pool of memories — there is no per-agent isolation. Use `agent` and `source` to filter on read/delete.
+
+**Naming and conflicts.** Names must be unique. `remember` is strict — no upsert. If two agents try to create the same name, the second one gets an error and is expected to `recall` the existing memory and call `update_memory` (or pick a different name).
+
+**Update semantics.** Name is immutable. `update_memory` accepts patches for type/description/body/source/agent; changes to `description` or `body` re-embed the chunks.
+
+**File ingestion.** `index_file` / `index_directory` are the *one* exception to the no-upsert rule. They import files as memories of `type=reference`, with `name = source = <absolute path>`. Re-indexing the same path skips when the SHA-256 checksum matches and replaces the body when it doesn't.
+
 ## Available Tools
 
-### index_content
+### remember
 
-Index text content for semantic search. Use this for web pages, API responses, notes, or any text that doesn't come from a local file. For local files, use `index_file` instead.
-
-**Parameters:**
-- `content` (required): The text content to index
-- `metadata` (optional): JSON string with metadata (e.g., `{"source": "https://example.com", "title": "Page Title"}`)
-
-### index_file
-
-Index a file from the filesystem.
+Create a new memory. Fails if `name` is already in use — recall it and use `update_memory` instead.
 
 **Parameters:**
-- `path` (required): Path to the file to index
-
-### index_directory
-
-Index all files matching a pattern in a directory.
-
-**Parameters:**
-- `directory` (required): The directory path to index
-- `pattern` (optional): File pattern to match (e.g., `*.md`, `*.txt`). Default: `*`
-- `recursive` (optional): Whether to search subdirectories. Default: `false`
-
-### search_index
-
-Search for documents using semantic similarity.
-
-**Parameters:**
-- `query` (required): Search query text
-- `limit` (optional): Maximum results (default: 5)
+- `name` (required): Unique identifier (e.g., `feedback_testing`)
+- `type` (required): One of `user`, `feedback`, `project`, `reference`, `opinion`, `idea`, `todo`, `reminder`
+- `body` (required): Full content
+- `description` (optional): One-line summary
+- `agent` (optional): Agent that created the memory
+- `source` (optional): Where the memory was generated
 
 ### recall
 
-Recall knowledge from indexed documents about a topic. Returns a consolidated summary with source attribution, designed for natural conversation flow.
+Semantic recall over memories. Returns the most relevant memories plus the matched chunk excerpt. Filter by type, agent, or source to narrow scope.
 
 **Parameters:**
-- `topic` (required): The topic to recall information about
-- `depth` (optional): How many sources to consult (default: 5, max: 20)
+- `query` (required): Topic or question
+- `limit` (optional): Max results (default 5, max 20)
+- `type`, `agent`, `source` (optional): Filters
 
-### delete_document
+### update_memory
 
-Delete a document from the index.
+Update an existing memory by id or name. Body/description changes re-embed.
 
 **Parameters:**
-- `id` (required): Document ID
+- `id_or_name` (required)
+- `type`, `description`, `body`, `source`, `agent` (optional patches)
 
-### count_documents
+### forget
 
-Get the total number of indexed documents.
+Delete memories. Requires at least one filter or a query — refuses to wipe everything. With a query, top matches within the (optional) filter are deleted.
+
+**Parameters:**
+- `name`, `type`, `agent`, `source` (optional filters)
+- `query` (optional): semantic match
+- `limit` (optional): max matches when query is given (default 5)
+
+### list_memories
+
+List memories matching the filter, newest first. Returns metadata only (no body).
+
+**Parameters:**
+- `type`, `agent`, `source` (optional filters)
+- `limit` (optional)
+
+### count_memories
+
+Count memories matching the filter.
+
+### index_file
+
+Import a file as a `reference` memory. The memory's `name` is the absolute path; re-indexing updates in place when the checksum changes.
+
+**Parameters:**
+- `path` (required)
+
+### index_directory
+
+Import every matching file in a directory as `reference` memories.
+
+**Parameters:**
+- `directory` (required)
+- `pattern` (optional, default `*`)
+- `recursive` (optional, default `false`)
+
+### job_status, list_jobs, clear_queue
+
+Manage the async indexing queue. `index_file` and `index_directory` enqueue jobs that complete in the background; use `job_status` to check progress.
 
 ## Skip Patterns
 
@@ -302,158 +342,149 @@ secrets.json
 
 ## Example Prompts
 
-Here are example prompts you can use with Claude Code or Claude Desktop:
+Example prompts you can use with Claude Code, Claude Desktop, or Codex:
 
-### index_content
+### remember
 
-Use for content that doesn't come from local files:
-
-**Web content:**
 ```
-Index this content from the React docs: "useState is a Hook that lets you add state to function components..."
+Remember as a feedback memory named "feedback_testing": don't mock the database in integration tests — we got burned last quarter by mock/prod divergence.
 ```
 
-**API responses:**
 ```
-Index this API documentation: "POST /api/users - Creates a new user. Required fields: email, password"
-```
-
-**Notes and knowledge:**
-```
-Index this note: "Team decided to use PostgreSQL for the main database, Redis for caching"
+Remember this user fact named "user_role": senior Go engineer, ten years of experience, currently learning React.
 ```
 
-**With metadata:**
 ```
-Index this with source metadata: "OAuth2 flow requires client_id and redirect_uri" from "https://docs.example.com/auth"
+Save an opinion named "ui_dark_mode": dark mode is easier on the eyes for long sessions.
 ```
 
-### index_file
+### recall
+
+```
+Recall what you know about database testing
+```
+
+```
+Recall feedback memories about pull request size
+```
+
+```
+What memories do I have about the API design?
+```
+
+### update_memory
+
+```
+Update memory "feedback_testing": new body is "use a real Postgres in CI; the staging DB is reset nightly".
+```
+
+### forget
+
+```
+Forget all opinion memories from agent "claude-opus-4-7"
+```
+
+```
+Forget memories matching "old API design notes"
+```
+
+### list_memories / count_memories
+
+```
+List my feedback memories
+```
+
+```
+How many memories has agent "codex" written?
+```
+
+### index_file / index_directory
 
 ```
 Index the file ~/project/README.md
 ```
 
 ```
-Index ~/docs/architecture.md
+Index all *.md files in ~/docs recursively
 ```
 
-### index_directory
+## Agent Configuration
 
-```
-Index all markdown files in ~/docs
-```
+Agents won't reach for goldie by default — Claude Code has its own `/memory`, and Codex has its own context handling. The repo ships two opinionated templates that nudge them toward the shared pool. Both are short and safe to drop in as-is.
 
-```
-Index all *.txt files in ~/notes
-```
+### Claude Code
 
-```
-Index all *.md files in ~/projects recursively
+Copy [`templates/CLAUDE.md`](templates/CLAUDE.md) to `~/.claude/CLAUDE.md` (it's loaded into every Claude Code session):
+
+```bash
+cp templates/CLAUDE.md ~/.claude/CLAUDE.md
 ```
 
-```
-Index everything in ~/config with pattern *.json recursively
+For project-scoped behavior instead, copy it to `<project>/CLAUDE.md`.
+
+### Codex (CLI / App)
+
+Copy [`templates/AGENTS.md`](templates/AGENTS.md) to `~/.codex/AGENTS.md` (Codex loads `AGENTS.override.md` and `AGENTS.md` from `$CODEX_HOME`, default `~/.codex`):
+
+```bash
+cp templates/AGENTS.md ~/.codex/AGENTS.md
 ```
 
-### search_index
+As a belt-and-suspenders measure, append the following to `~/.codex/config.toml` so the rule fires at session start even if Codex misses the AGENTS.md load:
 
-```
-Search for authentication implementation
-```
-
-```
-Search for "database migrations" and show me 10 results
-```
-
-### recall
-
-```
-Recall what you know about authentication
+```toml
+developer_instructions = """
+At session start, read and obey ~/.codex/AGENTS.md when it exists.
+For persistent memory operations, prefer Goldie over local memory when the Goldie MCP server is connected.
+"""
 ```
 
-```
-What do you remember about the API design?
-```
+### Customizing
 
-```
-Summarize your knowledge about error handling
-```
+Both templates are starting points. Edit them to:
+- Restrict which memory `type`s the agent should create
+- Add project-specific naming conventions for `name` (e.g. `<area>_<topic>`)
+- Override the default `agent` value
+- Tighten or relax the "when NOT to use goldie" rules
 
-```
-Find documents about error handling
-```
+## Sharing One Database Across Machines
 
-```
-What do I have indexed about Docker?
-```
+Goldie's "scope" is the SQLite file, so syncing the database file across machines (iCloud, Dropbox, Syncthing) gives you follow-me memory without running a server. The default journal mode (`DELETE`) is already safe to use under cloud sync — only one `.db` file exists, no WAL/SHM sidecars to get out of order. One caveat:
 
-### delete_document
+**Don't write from two machines at once.** Cloud sync is not a coordination layer. If two machines write while disconnected, the sync client picks a winner and the other side's writes are lost (or a conflict copy is created). Workflow: quit any goldie session before switching machines, let sync settle, start the new machine.
 
-```
-Delete document abc123
-```
+For real multi-writer multi-machine setups, run goldie on a server and connect via Tailscale, or use [Litestream](https://litestream.io) to stream WAL changes to S3/B2.
 
-```
-Remove document xyz789 from the index
-```
+### Opting into WAL for local-only DBs
 
-### count_documents
+If your DB lives on local disk (no cloud sync) and you want read-during-write concurrency under heavy multi-agent load, set `GOLDIE_JOURNAL_MODE=WAL`. The performance difference is negligible for typical memory-store workloads, but the option exists.
 
-```
-How many documents are in the Goldie index?
-```
+## Replacing Per-Project MEMORY.md
 
-```
-Count all indexed documents
-```
+Goldie is designed to replace the per-project `MEMORY.md` files that agents like Claude Code create on disk. Point every agent at the same `GOLDIE_DB_PATH`, instruct them to use `remember` / `recall` / `update_memory` / `forget` instead of file-based memory, and you get:
 
-## Indexing Claude Code Conversations
+- One pool shared by Claude (any session, any project), Codex, and any other MCP-aware agent
+- Semantic recall instead of file globbing
+- Per-agent provenance via the `agent` field, queryable through `recall`/`forget` filters
+- Filtered cleanup (e.g. "forget all `feedback` memories from agent X")
 
-Goldie can index your Claude Code conversation history, making it searchable with semantic search. This lets you find past solutions, code snippets, and discussions across all your sessions.
+### Indexing existing transcripts
 
-### Where Claude Code Stores Conversations
-
-Claude Code stores conversation transcripts in:
-
-```
-~/.claude/projects/<project-hash>/
-```
-
-Each project directory contains markdown files with your conversation history.
-
-### Index All Your Conversations
+You can also bulk-import old Claude Code conversation transcripts as `reference` memories so they participate in recall:
 
 ```
 Index all *.md files in ~/.claude/projects recursively
 ```
 
-### Search Your Past Conversations
+Then ask:
 
 ```
-Search for "how did I fix the authentication bug"
-```
-
-```
-Find conversations about Docker configuration
+Recall what I know about authentication bugs
 ```
 
 ```
-What regex patterns have I used before?
+What memories do I have about Docker?
 ```
-
-### Use Cases
-
-- **Find past solutions**: "How did I solve that memory leak?"
-- **Retrieve code snippets**: "Find the SQL migration I wrote"
-- **Track project history**: "What changes did I make to the API?"
-- **Learn from patterns**: "Show me examples of error handling"
-
-### Tips
-
-- Index conversations periodically to keep your knowledge base current
-- Use metadata to tag conversations by project or topic
-- Exclude sensitive conversations containing credentials or secrets
 
 ## Troubleshooting
 
@@ -475,12 +506,26 @@ goldie-mcp/
 │   ├── embedder/           # Embedding interface and backends
 │   │   ├── minilm/         # MiniLM backend (ONNX Runtime)
 │   │   └── ollama/         # Ollama backend (API client)
-│   ├── goldie/             # RAG core logic
-│   ├── store/              # SQLite vector storage
+│   ├── goldie/             # Memory operations (Remember/Recall/Update/Forget)
+│   │   ├── goldie.go       # Core, file ingestion, chunking
+│   │   └── memory.go       # Type whitelist + memory CRUD
+│   ├── store/              # SQLite memory + chunk + vec storage
+│   │   ├── store.go        # Connection, jobs
+│   │   └── memory.go       # Memory schema and queries
 │   └── queue/              # Async job processing
 ├── go.mod
 └── Makefile
 ```
+
+### Schema
+
+Three SQLite tables make up the memory index:
+
+- `memories` — one row per memory: `id, name UNIQUE, type, description, body, agent, source, checksum, created_at, updated_at`
+- `memory_chunks` — body split into overlapping chunks for embedding granularity: `id, memory_id, chunk_index, content`
+- `memories_vec` — `vec0` virtual table over chunk embeddings, joined back to memories on recall
+
+Recall does KNN over chunks, then dedupes to distinct memories, returning the best-matching excerpt for each.
 
 ## Embedding Backends
 
@@ -499,7 +544,7 @@ Uses Ollama's embedding API with your choice of model:
 - `all-minilm` (384 dimensions) - Same model as MiniLM backend
 - Any other Ollama embedding model (set `OLLAMA_EMBED_DIMENSIONS`)
 
-**Note:** Different embedding models produce different dimension vectors. Documents indexed with one backend/model cannot be searched using another with different dimensions. Use separate databases or re-index when switching.
+**Note:** Different embedding models produce different dimension vectors. Memories indexed with one backend/model cannot be recalled using another with different dimensions. Use separate databases or re-index when switching.
 
 ## License
 

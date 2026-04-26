@@ -512,9 +512,9 @@ type rowScanner interface {
 
 func scanMemoryRow(r rowScanner) (*Memory, error) {
 	var (
-		m                          Memory
-		desc, agent, source, csum  sql.NullString
-		createdAt, updatedAt       time.Time
+		m                         Memory
+		desc, agent, source, csum sql.NullString
+		createdAt, updatedAt      time.Time
 	)
 	if err := r.Scan(
 		&m.ID, &m.Name, &m.Type, &desc, &m.Body, &agent, &source, &csum,

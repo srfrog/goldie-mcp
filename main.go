@@ -202,7 +202,7 @@ func registerTools(s *server.MCPServer) {
 			mcp.WithString("name", mcp.Required(), mcp.Description("Unique identifier for the memory (human-readable, e.g. 'feedback_testing')")),
 			mcp.WithString("type", mcp.Required(), mcp.Description("Memory type: "+allowedTypes)),
 			mcp.WithString("body", mcp.Required(), mcp.Description("The full content of the memory")),
-			mcp.WithString("description", mcp.Description("One-line summary used to decide relevance later")),
+			mcp.WithString("description", mcp.Description("One-line summary of the memory's content. This text is prepended to every embedded chunk, so it directly affects recall ranking — be specific and content-rich (e.g. 'Prefer pnpm over npx for package operations') rather than generic ('user preference')")),
 			mcp.WithString("agent", mcp.Description("The agent that created this memory (e.g. 'claude-opus-4-7')")),
 			mcp.WithString("source", mcp.Description("Where the memory was generated (e.g. file path, editor, URL)")),
 		),
@@ -211,14 +211,23 @@ func registerTools(s *server.MCPServer) {
 
 	s.AddTool(
 		mcp.NewTool("recall",
-			mcp.WithDescription("Semantic recall over the shared multi-agent memory pool. Prefer this over reading local memory files. Returns the most relevant memories with a matched chunk excerpt. Filter by type, agent, or source to narrow scope."),
+			mcp.WithDescription("Semantic recall over the shared multi-agent memory pool. Prefer this over reading local memory files. Returns the most relevant memories with a matched chunk excerpt (full bodies are omitted by default to keep responses small — pass include_body=true, or follow up with get_memory for the ones you actually need). Filter by type, agent, or source to narrow scope."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("The topic or question to recall about")),
 			mcp.WithNumber("limit", mcp.Description("Maximum results to return (default: 5, max: 20)")),
 			mcp.WithString("type", mcp.Description("Filter by memory type")),
 			mcp.WithString("agent", mcp.Description("Filter by agent")),
 			mcp.WithString("source", mcp.Description("Filter by source")),
+			mcp.WithBoolean("include_body", mcp.Description("Include the full body of each result (default: false). Leave false when scanning; set true only when you know every result is needed in full.")),
 		),
 		handleRecall,
+	)
+
+	s.AddTool(
+		mcp.NewTool("get_memory",
+			mcp.WithDescription("Fetch a single memory's full record (including body) by id or name. Use this after recall to pull the full body for results that are worth reading in depth — recall itself returns only excerpts by default."),
+			mcp.WithString("id_or_name", mcp.Required(), mcp.Description("The memory's id or name")),
+		),
+		handleGetMemory,
 	)
 
 	s.AddTool(
@@ -372,6 +381,13 @@ func handleRemember(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 	m, err := goldieInstance.Remember(in)
 	if err != nil {
 		if goldie.IsErrMemoryNameExists(err) {
+			existingID := ""
+			if existing, lookupErr := goldieInstance.GetMemory(in.Name); lookupErr == nil && existing != nil {
+				existingID = existing.ID
+			}
+			if existingID != "" {
+				return mcp.NewToolResultError(fmt.Sprintf("memory %q already exists (id: %s) — call update_memory(id_or_name=%q, ...) to change it", in.Name, existingID, existingID)), nil
+			}
 			return mcp.NewToolResultError(fmt.Sprintf("memory %q already exists — recall it and use update_memory to change it", in.Name)), nil
 		}
 		return mcp.NewToolResultError(err.Error()), nil
@@ -391,6 +407,7 @@ func handleRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 		return mcp.NewToolResultError("query is required"), nil
 	}
 	limit := max(min(argInt(args, "limit", 5), 20), 1)
+	includeBody := argBool(args, "include_body")
 
 	filter := store.MemoryFilter{
 		Type:   argString(args, "type"),
@@ -409,9 +426,11 @@ func handleRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 	formatted := make([]map[string]any, 0, len(results))
 	for _, r := range results {
 		entry := memorySummary(r.Memory)
-		entry["body"] = r.Memory.Body
 		entry["excerpt"] = r.Excerpt
 		entry["score"] = r.Score
+		if includeBody {
+			entry["body"] = r.Memory.Body
+		}
 		formatted = append(formatted, entry)
 	}
 
@@ -420,6 +439,29 @@ func handleRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 		"count":   len(results),
 		"results": formatted,
 		"message": formatMessage("Recalled %d memory(ies) for %q", len(results), query),
+	})), nil
+}
+
+func handleGetMemory(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	idOrName := argString(args, "id_or_name")
+	if idOrName == "" {
+		return mcp.NewToolResultError("id_or_name is required"), nil
+	}
+
+	m, err := goldieInstance.GetMemory(idOrName)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("get_memory failed: %v", err)), nil
+	}
+	if m == nil {
+		return mcp.NewToolResultError(fmt.Sprintf("memory not found: %s", idOrName)), nil
+	}
+
+	entry := memorySummary(*m)
+	entry["body"] = m.Body
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"memory":  entry,
+		"message": formatMessage("Fetched %q (id: %s)", m.Name, m.ID),
 	})), nil
 }
 

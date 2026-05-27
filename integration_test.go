@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,8 @@ func (ts *TestSetup) CallTool(t *testing.T, toolName string, args map[string]any
 		result, err = handleRemember(ctx, req)
 	case "recall":
 		result, err = handleRecall(ctx, req)
+	case "get_memory":
+		result, err = handleGetMemory(ctx, req)
 	case "update_memory":
 		result, err = handleUpdateMemory(ctx, req)
 	case "forget":
@@ -521,10 +524,117 @@ func TestMCP_RememberDuplicateName(t *testing.T) {
 	if first["success"] != true {
 		t.Fatalf("first remember failed: %v", first)
 	}
+	firstID := first["memory"].(map[string]any)["id"].(string)
+	if firstID == "" {
+		t.Fatal("expected non-empty id from first remember")
+	}
 
 	second := ts.CallTool(t, "remember", args)
 	if _, ok := second["success"]; ok && second["success"] == true {
 		t.Errorf("expected duplicate to fail, got %v", second)
+	}
+	// The error message should include the existing id so the caller can
+	// call update_memory directly without an intermediate recall.
+	msg, _ := second["message"].(string)
+	if !strings.Contains(msg, firstID) {
+		t.Errorf("expected duplicate-name error to contain existing id %q, got %q", firstID, msg)
+	}
+}
+
+func TestMCP_RecallOmitsBodyByDefault(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	ts.CallTool(t, "remember", map[string]any{
+		"name":        "body_test",
+		"type":        "feedback",
+		"description": "long body test",
+		"body":        "Body content that should not appear in default recall responses.",
+	})
+
+	resp := ts.CallTool(t, "recall", map[string]any{
+		"query": "body content",
+	})
+	results, ok := resp["results"].([]any)
+	if !ok || len(results) == 0 {
+		t.Fatalf("expected results, got %v", resp)
+	}
+	first := results[0].(map[string]any)
+	if _, present := first["body"]; present {
+		t.Errorf("default recall should not include body, got %v", first["body"])
+	}
+	if _, present := first["excerpt"]; !present {
+		t.Errorf("recall should include excerpt, got keys %v", first)
+	}
+}
+
+func TestMCP_RecallIncludesBodyWhenRequested(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	bodyText := "Body content that should appear when include_body is true."
+	ts.CallTool(t, "remember", map[string]any{
+		"name":        "include_body_test",
+		"type":        "feedback",
+		"description": "include_body opt-in",
+		"body":        bodyText,
+	})
+
+	resp := ts.CallTool(t, "recall", map[string]any{
+		"query":        "body content",
+		"include_body": true,
+	})
+	results, ok := resp["results"].([]any)
+	if !ok || len(results) == 0 {
+		t.Fatalf("expected results, got %v", resp)
+	}
+	first := results[0].(map[string]any)
+	body, _ := first["body"].(string)
+	if body != bodyText {
+		t.Errorf("expected body %q, got %q", bodyText, body)
+	}
+}
+
+func TestMCP_GetMemory(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	bodyText := "Full body that get_memory should return verbatim."
+	create := ts.CallTool(t, "remember", map[string]any{
+		"name":        "get_memory_test",
+		"type":        "idea",
+		"description": "get_memory test",
+		"body":        bodyText,
+	})
+	id := create["memory"].(map[string]any)["id"].(string)
+
+	// Fetch by id.
+	byID := ts.CallTool(t, "get_memory", map[string]any{"id_or_name": id})
+	m, ok := byID["memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("get_memory by id failed: %v", byID)
+	}
+	if m["body"].(string) != bodyText {
+		t.Errorf("get_memory by id: expected body %q, got %q", bodyText, m["body"])
+	}
+
+	// Fetch by name.
+	byName := ts.CallTool(t, "get_memory", map[string]any{"id_or_name": "get_memory_test"})
+	m2, ok := byName["memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("get_memory by name failed: %v", byName)
+	}
+	if m2["body"].(string) != bodyText {
+		t.Errorf("get_memory by name: expected body %q, got %q", bodyText, m2["body"])
+	}
+
+	// Missing memory should return an error message, not a memory payload.
+	missing := ts.CallTool(t, "get_memory", map[string]any{"id_or_name": "does_not_exist"})
+	if _, present := missing["memory"]; present {
+		t.Errorf("expected no memory payload for missing key, got %v", missing)
 	}
 }
 

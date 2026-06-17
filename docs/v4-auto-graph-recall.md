@@ -360,15 +360,17 @@ Optional additions to `remember` and `update_memory`:
 
 These are hints, not required fields. If omitted, Goldie derives graph links itself.
 
-Potential new tools:
+Graph inspection tools:
 
-- `list_nodes` - inspect concept nodes and aliases.
+- `list_nodes` - inspect concept and memory nodes, including alias and edge counts
+  for testing grouped recall.
 - `merge_nodes` - merge duplicate concepts and move aliases/edges.
 - `link_memory` - manually attach a memory to a concept.
 - `explain_recall` - show vector matches, alias matches, and graph expansion.
 
-`explain_recall` is required for automatic recall inspectability. The other tools can
-wait until graph-backed recall is working and concept cleanup becomes necessary.
+`list_nodes` is the minimal v4 test surface. `explain_recall` is required for
+automatic recall inspectability. The cleanup tools can wait until graph-backed recall
+is working and concept cleanup becomes necessary.
 
 ## Recall Path
 
@@ -631,7 +633,7 @@ recall should return the grouped Tuplia neighborhood and mark the descent
 
 ### Phase 5: Cleanup Tools
 
-- Add concept inspection.
+- Expand concept inspection beyond the minimal `list_nodes` test surface.
 - Add manual merge/link tools.
 - Add dedupe assistance for near-equivalent memories.
 - Make `merge_nodes` collision-safe: re-point aliases and edges with

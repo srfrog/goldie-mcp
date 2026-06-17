@@ -278,6 +278,16 @@ func registerTools(s *server.MCPServer) {
 	)
 
 	s.AddTool(
+		mcp.NewTool("list_nodes",
+			mcp.WithDescription("Inspect graph nodes created for memories and harvested concepts. Returns labels plus lightweight alias and edge counts for testing graph recall."),
+			mcp.WithString("kind", mcp.Description("Filter by node kind, such as concept or memory")),
+			mcp.WithString("query", mcp.Description("Filter by normalized label or alias substring")),
+			mcp.WithNumber("limit", mcp.Description("Maximum nodes to return (default: 50, max: 200)")),
+		),
+		handleListNodes,
+	)
+
+	s.AddTool(
 		mcp.NewTool("index_file",
 			mcp.WithDescription("Import a file from the filesystem as a reference memory. The memory's name is the absolute path; re-indexing the same path updates in place when the file's checksum changes. Set `agent` to your agent identity (e.g. 'claude-opus-4-7', 'codex') so future sessions can filter by provenance."),
 			mcp.WithString("path", mcp.Required(), mcp.Description("Path to the file")),
@@ -370,6 +380,18 @@ func nodeSummary(n store.Node) map[string]any {
 		"id":    n.ID,
 		"kind":  n.Kind,
 		"label": n.Label,
+	}
+}
+
+func nodeInspectionSummary(n store.Node) map[string]any {
+	return map[string]any{
+		"id":               n.ID,
+		"kind":             n.Kind,
+		"label":            n.Label,
+		"normalized_label": n.NormalizedLabel,
+		"alias_count":      n.AliasCount,
+		"outgoing_count":   n.OutgoingCount,
+		"incoming_count":   n.IncomingCount,
 	}
 }
 
@@ -609,6 +631,29 @@ func handleCountMemories(_ context.Context, request mcp.CallToolRequest) (*mcp.C
 	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
 		"count":   n,
 		"message": formatMessage("%d memory(ies)", n),
+	})), nil
+}
+
+func handleListNodes(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	filter := store.NodeFilter{
+		Kind:  argString(args, "kind"),
+		Query: argString(args, "query"),
+	}
+	limit := argInt(args, "limit", 50)
+
+	nodes, err := goldieInstance.ListNodes(filter, limit)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	summaries := make([]map[string]any, 0, len(nodes))
+	for _, n := range nodes {
+		summaries = append(summaries, nodeInspectionSummary(n))
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"count":   len(nodes),
+		"nodes":   summaries,
+		"message": formatMessage("Found %d node(s)", len(nodes)),
 	})), nil
 }
 

@@ -145,6 +145,8 @@ func (ts *TestSetup) CallTool(t *testing.T, toolName string, args map[string]any
 		result, err = handleListMemories(ctx, req)
 	case "count_memories":
 		result, err = handleCountMemories(ctx, req)
+	case "list_nodes":
+		result, err = handleListNodes(ctx, req)
 	case "index_file":
 		result, err = handleIndexFile(ctx, req)
 	case "index_directory":
@@ -189,6 +191,48 @@ func isErrorResult(resp map[string]any) bool {
 	// Heuristic: if "message" is the only key and it doesn't start with the
 	// 🐕 emoji, treat as error.
 	return false
+}
+
+func waitForGraphHarvest(t *testing.T, ts *TestSetup) {
+	t.Helper()
+
+	ts.Queue.Start()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		jobs, err := ts.Store.ListJobs("")
+		if err != nil {
+			t.Fatalf("ListJobs failed: %v", err)
+		}
+		hasActiveHarvest := false
+		hasCompletedHarvest := false
+		for _, job := range jobs {
+			if job.Type != store.JobTypeGraphHarvest {
+				continue
+			}
+			switch job.Status {
+			case store.JobStatusQueued, store.JobStatusProcessing:
+				hasActiveHarvest = true
+			case store.JobStatusCompleted:
+				hasCompletedHarvest = true
+			case store.JobStatusFailed:
+				t.Fatalf("graph_harvest failed: %s", job.Error)
+			}
+		}
+		if hasCompletedHarvest && !hasActiveHarvest {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	jobs, err := ts.Store.ListJobs("")
+	if err != nil {
+		t.Fatalf("ListJobs failed: %v", err)
+	}
+	for _, job := range jobs {
+		if job.Type == store.JobTypeGraphHarvest && job.Status != store.JobStatusCompleted {
+			t.Fatalf("graph_harvest did not complete, status=%s error=%s", job.Status, job.Error)
+		}
+	}
 }
 
 // ============================================================================
@@ -613,42 +657,7 @@ func TestMCP_RecallIncludesConceptGroups(t *testing.T) {
 		}
 	}
 
-	ts.Queue.Start()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		jobs, err := ts.Store.ListJobs("")
-		if err != nil {
-			t.Fatalf("ListJobs failed: %v", err)
-		}
-		hasActiveHarvest := false
-		hasCompletedHarvest := false
-		for _, job := range jobs {
-			if job.Type != store.JobTypeGraphHarvest {
-				continue
-			}
-			switch job.Status {
-			case store.JobStatusQueued, store.JobStatusProcessing:
-				hasActiveHarvest = true
-			case store.JobStatusCompleted:
-				hasCompletedHarvest = true
-			case store.JobStatusFailed:
-				t.Fatalf("graph_harvest failed: %s", job.Error)
-			}
-		}
-		if hasCompletedHarvest && !hasActiveHarvest {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	jobs, err := ts.Store.ListJobs("")
-	if err != nil {
-		t.Fatalf("ListJobs failed: %v", err)
-	}
-	for _, job := range jobs {
-		if job.Type == store.JobTypeGraphHarvest && job.Status != store.JobStatusCompleted {
-			t.Fatalf("graph_harvest did not complete, status=%s error=%s", job.Status, job.Error)
-		}
-	}
+	waitForGraphHarvest(t, ts)
 
 	resp := ts.CallTool(t, "recall", map[string]any{
 		"query": "Tuplia",
@@ -669,6 +678,55 @@ func TestMCP_RecallIncludesConceptGroups(t *testing.T) {
 	groupConcept := group["concept"].(map[string]any)
 	if groupConcept["label"] != "Tuplia Cloud" {
 		t.Fatalf("expected Tuplia Cloud group, got %v", groupConcept)
+	}
+}
+
+func TestMCP_ListNodesShowsHarvestedConcepts(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	for _, name := range []string{"tuplia_cloud_passwordless_auth", "tuplia_cloud_pricing"} {
+		resp := ts.CallTool(t, "remember", map[string]any{
+			"name": name,
+			"type": "project",
+			"body": "Tuplia Cloud memory " + name,
+		})
+		if resp["success"] != true {
+			t.Fatalf("remember failed: %v", resp)
+		}
+	}
+
+	waitForGraphHarvest(t, ts)
+
+	resp := ts.CallTool(t, "list_nodes", map[string]any{
+		"kind":  "concept",
+		"query": "Tuplia",
+	})
+	nodes, ok := resp["nodes"].([]any)
+	if !ok || len(nodes) == 0 {
+		t.Fatalf("expected nodes, got %v", resp)
+	}
+
+	labels := map[string]bool{}
+	for _, raw := range nodes {
+		node := raw.(map[string]any)
+		label, _ := node["label"].(string)
+		labels[label] = true
+		if label == "Tuplia Cloud" {
+			if node["incoming_count"].(float64) == 0 {
+				t.Fatalf("expected Tuplia Cloud incoming edge count, got %v", node)
+			}
+			if node["outgoing_count"].(float64) == 0 {
+				t.Fatalf("expected Tuplia Cloud outgoing edge count, got %v", node)
+			}
+		}
+	}
+	if !labels["Tuplia"] {
+		t.Fatalf("expected Tuplia concept in %v", nodes)
+	}
+	if !labels["Tuplia Cloud"] {
+		t.Fatalf("expected Tuplia Cloud concept in %v", nodes)
 	}
 }
 

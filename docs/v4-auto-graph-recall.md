@@ -59,12 +59,13 @@ The user-facing behavior should stay simple:
 
 ## Release Boundary
 
-The guaranteed v4 deliverable is grouped graph recall: memory nodes, harvested
-concepts and facets, graph-backed `recall`, async harvest/backfill, and additive
-`concept_recall` output. Automatic recall is part of the v4 design, but it must remain
-additive and fallback-safe while beam width, confidence margins, and fuzzy vantage
-resolution are tuned. Phases 1-3 are valuable on their own; Phase 4 should improve the
-experience without making v4 feel unfinished if it needs more tuning.
+The v4.0 launch boundary is grouped graph recall: memory nodes, harvested concepts
+and facets, graph-backed `recall`, async harvest/backfill, minimal `list_nodes`
+inspection, and additive `concept_recall` output.
+
+Automatic recall, fuzzy concept resolution, cleanup tools, and explicit agent hints
+are v4.x follow-ups. They improve the experience without making v4.0 feel unfinished
+if they need more tuning.
 
 ## Data Model
 
@@ -137,7 +138,7 @@ Goldie does not currently have a migration framework. Existing schema setup is m
 `CREATE TABLE IF NOT EXISTS`, and SQLite does not support `ALTER TABLE ... ADD COLUMN
 IF NOT EXISTS`.
 
-Phase 1 needs an idempotent schema-change helper before adding `memories.node_id`.
+v4.0 needs an idempotent schema-change helper before adding `memories.node_id`.
 The smallest version is:
 
 1. Query `PRAGMA table_info(memories)`.
@@ -268,7 +269,7 @@ Keep extraction simple. Prefer deterministic parsing before adding model calls:
 - Existing `[[wiki_style_links]]`, once explicit-hint support lands.
 - Explicit MCP fields such as `about`, if added later.
 
-Do not create nodes from raw title-case terms in Phase 2. Sentence-initial words,
+Do not create nodes from raw title-case terms in v4.0. Sentence-initial words,
 capitalized common nouns, and phrases like `Auth` or `Passwordless Auth` will pollute
 the graph quickly if they mint concepts automatically. Title-case extraction may
 produce candidate terms for inspection, but it should not create graph nodes unless
@@ -281,7 +282,7 @@ The concept hierarchy comes from the descriptive names and sources agents alread
 produce. A name like `tuplia_cloud_passwordless_auth` or a path like
 `/Users/srfrog/Documents/Business/Tuplia/...` encodes a concept hierarchy that the
 agent will not remember next session. Goldie recovers it deterministically, with no
-model call. This is the primary source of facets; agent hints (Phase 6) are optional
+model call. This is the primary source of facets; agent hints (v4.3) are optional
 reinforcement, not the mechanism.
 
 Compound model: a facet is a child concept whose label extends its parent.
@@ -400,7 +401,7 @@ is working and concept cleanup becomes necessary.
 Known limitation: graph resolution in v4 starts with exact normalized label and alias
 matches. `Tuplia` resolves well if it is a known label or alias. `the Tuplia auth
 thing`, misspellings, and vague paraphrases may fall back entirely to vector search
-unless an exact alias exists for the phrase. Phase 4 adds embeddings for concept
+unless an exact alias exists for the phrase. v4.1 adds embeddings for concept
 labels, aliases, and descriptions, using a `nodes_vec` table following the existing
 `memories_vec` pattern, to support fuzzy concept resolution.
 
@@ -481,7 +482,7 @@ Keep ranking legible and tunable:
   decisions.
 - Duplicate memories should not both dominate the top results.
 
-Start Phase 3 with a concrete weighted sum, then tune from observed results:
+Start v4.0 with a concrete weighted sum, then tune from observed results:
 
 ```text
 score =
@@ -584,19 +585,17 @@ If the auth branch is not clearly stronger than other Tuplia branches, automatic
 recall should return the grouped Tuplia neighborhood and mark the descent
 `flat_gradient` instead of pretending it found the one right memory.
 
-## Delivery Phases
+## Delivery Versions
 
-### Phase 1: Memory Nodes
+### v4.0: Grouped Graph Recall
+
+This is the launchable v4 boundary.
 
 - Add `nodes`, `node_aliases`, and `edges`.
 - Add `memories.node_id`.
 - Create a memory node on every `remember` and `index_file`.
 - Add explicit graph cleanup to the memory delete path.
 - Backfill existing memories through the async job queue.
-- No recall behavior change yet.
-
-### Phase 2: Concept Extraction
-
 - Extract obvious concepts on write.
 - Harvest compound facets from names and sources using the parent gate, the frequency
   gate (N=2), and longest-prefix attachment.
@@ -607,9 +606,6 @@ recall should return the grouped Tuplia neighborhood and mark the descent
   `part_of`.
 - Defer `[[wiki_style_links]]` parsing until explicit-hint support.
 - Do not mint concept nodes from raw title-case extraction.
-
-### Phase 3: Graph-Backed Recall
-
 - Resolve query labels and aliases.
 - Expand direct memory links and `part_of` facets from matched concepts.
 - Merge graph results with vector results.
@@ -617,8 +613,9 @@ recall should return the grouped Tuplia neighborhood and mark the descent
 - Return the grouped facet shape for concept queries; keep the flat shape for plain
   queries.
 - Add recall metadata for debugging.
+- Ship minimal `list_nodes` inspection for testing harvested concepts and edge counts.
 
-### Phase 4: Automatic Recall
+### v4.1: Automatic Recall
 
 - Resolve a vantage from exact labels and aliases.
 - Add `nodes_vec` for fuzzy concept resolution.
@@ -626,12 +623,12 @@ recall should return the grouped Tuplia neighborhood and mark the descent
 - Return a compact path, convergence flag, scores, and stop reason.
 - Fall back to grouped/flat recall when the gradient is ambiguous.
 - Promote `explain_recall` to a first-class trace tool.
-- Auto-recall quality is bounded by concept hygiene until Phase 5 cleanup tools land.
+- Auto-recall quality is bounded by concept hygiene until v4.2 cleanup tools land.
   Exact duplicates are prevented by `UNIQUE(kind, normalized_label)`, but
   near-duplicates like `Tuplia Cloud` and `Tuplia Cloud Platform` can still flatten or
   split the gradient. `flat_gradient` fallback is the protection in this phase.
 
-### Phase 5: Cleanup Tools
+### v4.2: Cleanup Tools
 
 - Expand concept inspection beyond the minimal `list_nodes` test surface.
 - Add manual merge/link tools.
@@ -640,7 +637,7 @@ recall should return the grouped Tuplia neighborhood and mark the descent
   `INSERT OR IGNORE` or equivalent deduplication so `UNIQUE(src_node_id, relation,
   dst_node_id)` collisions do not abort the merge.
 
-### Phase 6: Optional Agent Hints
+### v4.3: Optional Agent Hints
 
 - Add optional `about`, `aliases`, and `links` parameters.
 - Keep plain `remember` as the default path.
@@ -669,10 +666,17 @@ share no `Architecture` node).
 
 ## Success Criteria
 
+### v4.0
+
 - `recall "Tuplia"` reliably returns canonical Tuplia context and high-signal Tuplia
   memories even when names/descriptions vary.
 - `recall "Tuplia"` surfaces the concept's facets (`Tuplia Cloud`, `Tuplia
   Architecture`, ...) harvested from existing memory names, grouped under the concept.
+- `list_nodes kind=concept query=Tuplia` shows the harvested root and facets with
+  alias and edge counts.
+
+### v4.x
+
 - `recall "how does Tuplia handle auth"` can return a specific high-confidence memory
   without the caller naming intermediate concepts or the target memory.
 - Every automatic recall is inspectable: the vantage, path, scores, and stop reason

@@ -146,6 +146,14 @@ func (g *Goldie) RecallMemory(query string, limit int, filter store.MemoryFilter
 	return g.store.SearchMemories(emb, limit, filter)
 }
 
+// RecallConcept returns graph-grouped results when query exactly matches a concept.
+func (g *Goldie) RecallConcept(query string, limit int, filter store.MemoryFilter) (*store.ConceptRecall, error) {
+	if query == "" {
+		return nil, fmt.Errorf("empty query")
+	}
+	return g.store.RecallConcept(query, limit, filter)
+}
+
 // ForgetMemory deletes memories. If query is non-empty, semantic search
 // (constrained by filter) selects up to `limit` candidates and they are
 // deleted. Otherwise every memory matching the filter is deleted. Refuses to
@@ -184,6 +192,11 @@ func (g *Goldie) ListMemories(filter store.MemoryFilter, limit int) ([]store.Mem
 // CountMemories returns the count of memories matching the filter.
 func (g *Goldie) CountMemories(filter store.MemoryFilter) (int, error) {
 	return g.store.CountMemories(filter)
+}
+
+// ListNodes returns graph nodes for inspection.
+func (g *Goldie) ListNodes(filter store.NodeFilter, limit int) ([]store.Node, error) {
+	return g.store.ListNodes(filter, limit)
 }
 
 // GetMemory looks up a memory by id, falling back to name lookup.

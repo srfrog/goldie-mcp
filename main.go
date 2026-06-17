@@ -365,6 +365,40 @@ func memorySummary(m store.Memory) map[string]any {
 	}
 }
 
+func nodeSummary(n store.Node) map[string]any {
+	return map[string]any{
+		"id":    n.ID,
+		"kind":  n.Kind,
+		"label": n.Label,
+	}
+}
+
+func conceptRecallSummary(recall *store.ConceptRecall) map[string]any {
+	out := map[string]any{
+		"concept": nodeSummary(recall.Concept),
+	}
+	groups := make([]map[string]any, 0, len(recall.Groups))
+	for _, group := range recall.Groups {
+		memories := make([]map[string]any, 0, len(group.Memories))
+		for _, m := range group.Memories {
+			memories = append(memories, memorySummary(m))
+		}
+		groups = append(groups, map[string]any{
+			"concept":  nodeSummary(group.Concept),
+			"memories": memories,
+			"count":    len(memories),
+		})
+	}
+	out["groups"] = groups
+
+	direct := make([]map[string]any, 0, len(recall.Direct))
+	for _, m := range recall.Direct {
+		direct = append(direct, memorySummary(m))
+	}
+	out["direct"] = direct
+	return out
+}
+
 // --- memory handlers ---
 
 func handleRemember(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -419,7 +453,11 @@ func handleRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("recall failed: %v", err)), nil
 	}
-	if len(results) == 0 {
+	conceptRecall, conceptErr := goldieInstance.RecallConcept(query, limit, filter)
+	if conceptErr != nil && errLog != nil {
+		errLog.Printf("concept recall failed: %v", conceptErr)
+	}
+	if len(results) == 0 && conceptRecall == nil {
 		return mcp.NewToolResultText(formatMessage("No memories found for %q", query)), nil
 	}
 
@@ -434,12 +472,16 @@ func handleRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 		formatted = append(formatted, entry)
 	}
 
-	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+	payload := map[string]any{
 		"query":   query,
 		"count":   len(results),
 		"results": formatted,
 		"message": formatMessage("Recalled %d memory(ies) for %q", len(results), query),
-	})), nil
+	}
+	if conceptRecall != nil {
+		payload["concept_recall"] = conceptRecallSummary(conceptRecall)
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(payload)), nil
 }
 
 func handleGetMemory(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

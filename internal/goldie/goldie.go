@@ -133,6 +133,11 @@ func (g *Goldie) IndexFile(path, agent string) (*IndexFileResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("looking up existing memory: %w", err)
 	}
+	if existing != nil && existing.NodeID == "" {
+		if err := g.store.EnsureMemoryNode(existing.ID); err != nil {
+			return nil, fmt.Errorf("ensuring file memory node: %w", err)
+		}
+	}
 	if existing != nil && existing.Checksum == checksum {
 		g.logger.Printf("IndexFile: %s unchanged, skipping", absPath)
 		return &IndexFileResult{
@@ -177,6 +182,11 @@ func (g *Goldie) IndexFile(path, agent string) (*IndexFileResult, error) {
 		}
 		if existing == nil {
 			return nil, fmt.Errorf("memory vanished after create race: %s", absPath)
+		}
+		if existing.NodeID == "" {
+			if err := g.store.EnsureMemoryNode(existing.ID); err != nil {
+				return nil, fmt.Errorf("ensuring raced file memory node: %w", err)
+			}
 		}
 		if existing.Checksum == checksum {
 			return &IndexFileResult{

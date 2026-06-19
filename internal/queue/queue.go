@@ -29,6 +29,11 @@ type IndexDirParams struct {
 	Agent     string `json:"agent,omitempty"`
 }
 
+// GraphBackfillParams represents parameters for a graph_backfill job.
+type GraphBackfillParams struct {
+	BatchSize int `json:"batch_size"`
+}
+
 // Queue manages background job processing
 type Queue struct {
 	store   *store.Store
@@ -162,6 +167,10 @@ func (q *Queue) processNextJob() {
 		q.processIndexFile(job)
 	case store.JobTypeIndexDir:
 		q.processIndexDirectory(job)
+	case store.JobTypeGraphBackfill:
+		q.processGraphBackfill(job)
+	case store.JobTypeGraphHarvest:
+		q.processGraphHarvest(job)
 	default:
 		q.logger.Printf("Unknown job type: %s", job.Type)
 		q.store.UpdateJobError(job.ID, fmt.Sprintf("unknown job type: %s", job.Type))
@@ -273,4 +282,100 @@ func (q *Queue) processIndexDirectory(job *store.Job) {
 	}
 
 	q.logger.Printf("Job %s: completed - created %d child jobs for indexing", job.ID, len(childJobIDs))
+}
+
+// processGraphBackfill creates graph nodes for memories written before v4.
+func (q *Queue) processGraphBackfill(job *store.Job) {
+	var params GraphBackfillParams
+	if err := json.Unmarshal([]byte(job.Params), &params); err != nil {
+		q.logger.Printf("Job %s: invalid params: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("invalid params: %v", err))
+		return
+	}
+	if params.BatchSize <= 0 {
+		params.BatchSize = 100
+	}
+
+	initialMissing, err := q.store.CountMemoriesMissingNodes()
+	if err != nil {
+		q.logger.Printf("Job %s: count failed: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("count failed: %v", err))
+		return
+	}
+	q.store.UpdateJobProgress(job.ID, 0, initialMissing)
+
+	backfilled := 0
+	for {
+		n, err := q.store.BackfillMemoryNodesBatch(params.BatchSize)
+		if err != nil {
+			q.logger.Printf("Job %s: backfill failed: %v", job.ID, err)
+			q.store.UpdateJobError(job.ID, fmt.Sprintf("backfill failed: %v", err))
+			return
+		}
+		if n == 0 {
+			break
+		}
+		backfilled += n
+		if err := q.store.UpdateJobProgress(job.ID, backfilled, initialMissing); err != nil {
+			q.logger.Printf("Job %s: failed to update progress: %v", job.ID, err)
+		}
+	}
+
+	remaining, err := q.store.CountMemoriesMissingNodes()
+	if err != nil {
+		q.logger.Printf("Job %s: final count failed: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("final count failed: %v", err))
+		return
+	}
+	if err := q.store.RefreshHarvestedConcepts(); err != nil {
+		q.logger.Printf("Job %s: concept harvest failed: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("concept harvest failed: %v", err))
+		return
+	}
+	if err := q.goldie.RefreshNodeEmbeddings(); err != nil {
+		q.logger.Printf("Job %s: node embedding refresh failed: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("node embedding refresh failed: %v", err))
+		return
+	}
+	resultJSON, err := json.Marshal(map[string]any{
+		"backfilled": backfilled,
+		"remaining":  remaining,
+	})
+	if err != nil {
+		q.logger.Printf("Job %s: failed to marshal result: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("failed to marshal result: %v", err))
+		return
+	}
+	q.store.UpdateJobProgress(job.ID, backfilled, initialMissing)
+	if err := q.store.UpdateJobResult(job.ID, string(resultJSON)); err != nil {
+		q.logger.Printf("Job %s: failed to update result: %v", job.ID, err)
+	}
+}
+
+func (q *Queue) processGraphHarvest(job *store.Job) {
+	if err := q.store.UpdateJobProgress(job.ID, 0, 1); err != nil {
+		q.logger.Printf("Job %s: failed to update progress: %v", job.ID, err)
+	}
+	if err := q.store.RefreshHarvestedConcepts(); err != nil {
+		q.logger.Printf("Job %s: concept harvest failed: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("concept harvest failed: %v", err))
+		return
+	}
+	if err := q.goldie.RefreshNodeEmbeddings(); err != nil {
+		q.logger.Printf("Job %s: node embedding refresh failed: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("node embedding refresh failed: %v", err))
+		return
+	}
+	resultJSON, err := json.Marshal(map[string]any{
+		"harvested": true,
+	})
+	if err != nil {
+		q.logger.Printf("Job %s: failed to marshal result: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("failed to marshal result: %v", err))
+		return
+	}
+	q.store.UpdateJobProgress(job.ID, 1, 1)
+	if err := q.store.UpdateJobResult(job.ID, string(resultJSON)); err != nil {
+		q.logger.Printf("Job %s: failed to update result: %v", job.ID, err)
+	}
 }

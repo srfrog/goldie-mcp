@@ -135,6 +135,8 @@ func (ts *TestSetup) CallTool(t *testing.T, toolName string, args map[string]any
 		result, err = handleRemember(ctx, req)
 	case "recall":
 		result, err = handleRecall(ctx, req)
+	case "explain_recall":
+		result, err = handleExplainRecall(ctx, req)
 	case "get_memory":
 		result, err = handleGetMemory(ctx, req)
 	case "update_memory":
@@ -145,6 +147,14 @@ func (ts *TestSetup) CallTool(t *testing.T, toolName string, args map[string]any
 		result, err = handleListMemories(ctx, req)
 	case "count_memories":
 		result, err = handleCountMemories(ctx, req)
+	case "list_nodes":
+		result, err = handleListNodes(ctx, req)
+	case "get_node":
+		result, err = handleGetNode(ctx, req)
+	case "merge_nodes":
+		result, err = handleMergeNodes(ctx, req)
+	case "link_memory":
+		result, err = handleLinkMemory(ctx, req)
 	case "index_file":
 		result, err = handleIndexFile(ctx, req)
 	case "index_directory":
@@ -189,6 +199,48 @@ func isErrorResult(resp map[string]any) bool {
 	// Heuristic: if "message" is the only key and it doesn't start with the
 	// 🐕 emoji, treat as error.
 	return false
+}
+
+func waitForGraphHarvest(t *testing.T, ts *TestSetup) {
+	t.Helper()
+
+	ts.Queue.Start()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		jobs, err := ts.Store.ListJobs("")
+		if err != nil {
+			t.Fatalf("ListJobs failed: %v", err)
+		}
+		hasActiveHarvest := false
+		hasCompletedHarvest := false
+		for _, job := range jobs {
+			if job.Type != store.JobTypeGraphHarvest {
+				continue
+			}
+			switch job.Status {
+			case store.JobStatusQueued, store.JobStatusProcessing:
+				hasActiveHarvest = true
+			case store.JobStatusCompleted:
+				hasCompletedHarvest = true
+			case store.JobStatusFailed:
+				t.Fatalf("graph_harvest failed: %s", job.Error)
+			}
+		}
+		if hasCompletedHarvest && !hasActiveHarvest {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	jobs, err := ts.Store.ListJobs("")
+	if err != nil {
+		t.Fatalf("ListJobs failed: %v", err)
+	}
+	for _, job := range jobs {
+		if job.Type == store.JobTypeGraphHarvest && job.Status != store.JobStatusCompleted {
+			t.Fatalf("graph_harvest did not complete, status=%s error=%s", job.Status, job.Error)
+		}
+	}
 }
 
 // ============================================================================
@@ -594,6 +646,285 @@ func TestMCP_RecallIncludesBodyWhenRequested(t *testing.T) {
 	body, _ := first["body"].(string)
 	if body != bodyText {
 		t.Errorf("expected body %q, got %q", bodyText, body)
+	}
+}
+
+func TestMCP_RecallIncludesConceptGroups(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	for _, name := range []string{"tuplia_cloud_passwordless_auth", "tuplia_cloud_pricing"} {
+		resp := ts.CallTool(t, "remember", map[string]any{
+			"name": name,
+			"type": "project",
+			"body": "Tuplia Cloud memory " + name,
+		})
+		if resp["success"] != true {
+			t.Fatalf("remember failed: %v", resp)
+		}
+	}
+
+	waitForGraphHarvest(t, ts)
+
+	resp := ts.CallTool(t, "recall", map[string]any{
+		"query": "Tuplia",
+	})
+	conceptRecall, ok := resp["concept_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected concept_recall, got %v", resp)
+	}
+	concept := conceptRecall["concept"].(map[string]any)
+	if concept["label"] != "Tuplia" {
+		t.Fatalf("expected Tuplia concept, got %v", concept)
+	}
+	groups := conceptRecall["groups"].([]any)
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 concept group, got %d", len(groups))
+	}
+	group := groups[0].(map[string]any)
+	groupConcept := group["concept"].(map[string]any)
+	if groupConcept["label"] != "Tuplia Cloud" {
+		t.Fatalf("expected Tuplia Cloud group, got %v", groupConcept)
+	}
+}
+
+func TestMCP_ListNodesShowsHarvestedConcepts(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	for _, name := range []string{"tuplia_cloud_passwordless_auth", "tuplia_cloud_pricing"} {
+		resp := ts.CallTool(t, "remember", map[string]any{
+			"name": name,
+			"type": "project",
+			"body": "Tuplia Cloud memory " + name,
+		})
+		if resp["success"] != true {
+			t.Fatalf("remember failed: %v", resp)
+		}
+	}
+
+	waitForGraphHarvest(t, ts)
+
+	resp := ts.CallTool(t, "list_nodes", map[string]any{
+		"kind":  "concept",
+		"query": "Tuplia",
+	})
+	nodes, ok := resp["nodes"].([]any)
+	if !ok || len(nodes) == 0 {
+		t.Fatalf("expected nodes, got %v", resp)
+	}
+
+	labels := map[string]bool{}
+	for _, raw := range nodes {
+		node := raw.(map[string]any)
+		label, _ := node["label"].(string)
+		labels[label] = true
+		if label == "Tuplia Cloud" {
+			if node["incoming_count"].(float64) == 0 {
+				t.Fatalf("expected Tuplia Cloud incoming edge count, got %v", node)
+			}
+			if node["outgoing_count"].(float64) == 0 {
+				t.Fatalf("expected Tuplia Cloud outgoing edge count, got %v", node)
+			}
+		}
+	}
+	if !labels["Tuplia"] {
+		t.Fatalf("expected Tuplia concept in %v", nodes)
+	}
+	if !labels["Tuplia Cloud"] {
+		t.Fatalf("expected Tuplia Cloud concept in %v", nodes)
+	}
+}
+
+func TestMCP_RecallIncludesAutomaticRecall(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	for _, name := range []string{
+		"feedback_tuplia_auth_no_passwords",
+		"project_tuplia_auth_policy",
+		"tuplia_cloud_passwordless",
+		"tuplia_cloud_pricing",
+	} {
+		resp := ts.CallTool(t, "remember", map[string]any{
+			"name": name,
+			"type": "project",
+			"body": "Tuplia memory " + name,
+		})
+		if resp["success"] != true {
+			t.Fatalf("remember failed: %v", resp)
+		}
+	}
+
+	waitForGraphHarvest(t, ts)
+
+	missingEmbeddings, err := ts.Store.CountConceptNodesMissingEmbeddings()
+	if err != nil {
+		t.Fatalf("CountConceptNodesMissingEmbeddings failed: %v", err)
+	}
+	if missingEmbeddings != 0 {
+		t.Fatalf("expected graph harvest to refresh node embeddings, got %d missing", missingEmbeddings)
+	}
+
+	resp := ts.CallTool(t, "recall", map[string]any{
+		"query": "how does Tuplia handle auth",
+	})
+	automaticRecall, ok := resp["automatic_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected automatic_recall, got %v", resp)
+	}
+	if automaticRecall["converged"] != true {
+		t.Fatalf("expected automatic recall to converge, got %v", automaticRecall)
+	}
+	vantage := automaticRecall["vantage"].(map[string]any)
+	if vantage["label"] != "Tuplia Auth" {
+		t.Fatalf("expected Tuplia Auth vantage, got %v", vantage)
+	}
+	memories := automaticRecall["memories"].([]any)
+	if len(memories) == 0 {
+		t.Fatalf("expected automatic recall memories, got %v", automaticRecall)
+	}
+
+	explain := ts.CallTool(t, "explain_recall", map[string]any{
+		"query": "how does Tuplia handle auth",
+	})
+	if _, ok := explain["vector_results"].([]any); !ok {
+		t.Fatalf("expected vector_results in explain_recall, got %v", explain)
+	}
+	explainedAutomatic, ok := explain["automatic_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected automatic_recall in explain_recall, got %v", explain)
+	}
+	if explainedAutomatic["converged"] != true {
+		t.Fatalf("expected explained automatic recall to converge, got %v", explainedAutomatic)
+	}
+}
+
+func TestMCP_GraphCleanupTools(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	for _, name := range []string{"manual_auth_note", "manual_auth_duplicate_note"} {
+		resp := ts.CallTool(t, "remember", map[string]any{
+			"name": name,
+			"type": "project",
+			"body": "Manual auth cleanup memory " + name,
+		})
+		if resp["success"] != true {
+			t.Fatalf("remember failed: %v", resp)
+		}
+	}
+
+	link := ts.CallTool(t, "link_memory", map[string]any{
+		"memory":  "manual_auth_note",
+		"concept": "Manual Auth",
+	})
+	if link["success"] != true {
+		t.Fatalf("link_memory target failed: %v", link)
+	}
+	memoryNode := ts.CallTool(t, "get_node", map[string]any{
+		"kind":  "memory",
+		"label": "manual_auth_note",
+	})
+	if node, ok := memoryNode["node"].(map[string]any); !ok {
+		t.Fatalf("expected memory node details, got %v", memoryNode)
+	} else if detailsNode := node["node"].(map[string]any); detailsNode["label"] != "manual_auth_note" {
+		t.Fatalf("expected manual_auth_note memory node, got %v", node)
+	}
+	link = ts.CallTool(t, "link_memory", map[string]any{
+		"memory":  "manual_auth_duplicate_note",
+		"concept": "Manual Auth Duplicate",
+	})
+	if link["success"] != true {
+		t.Fatalf("link_memory source failed: %v", link)
+	}
+
+	nodeResp := ts.CallTool(t, "get_node", map[string]any{
+		"label": "Manual Auth Duplicate",
+	})
+	node, ok := nodeResp["node"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected node details, got %v", nodeResp)
+	}
+	if detailsNode := node["node"].(map[string]any); detailsNode["label"] != "Manual Auth Duplicate" {
+		t.Fatalf("expected Manual Auth Duplicate node, got %v", node)
+	}
+
+	merge := ts.CallTool(t, "merge_nodes", map[string]any{
+		"source": "Manual Auth Duplicate",
+		"target": "Manual Auth",
+	})
+	if merge["success"] != true {
+		t.Fatalf("merge_nodes failed: %v", merge)
+	}
+
+	recall := ts.CallTool(t, "recall", map[string]any{
+		"query": "Manual Auth",
+		"limit": 5,
+	})
+	conceptRecall, ok := recall["concept_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected concept_recall, got %v", recall)
+	}
+	direct := conceptRecall["direct"].([]any)
+	if len(direct) != 2 {
+		t.Fatalf("expected 2 manually linked memories after merge, got %d", len(direct))
+	}
+}
+
+func TestMCP_RememberAndUpdateApplyGraphHints(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	resp := ts.CallTool(t, "remember", map[string]any{
+		"name":    "hinted_tuplia_auth_note",
+		"type":    "project",
+		"body":    "Tuplia auth hint body",
+		"about":   []any{"Tuplia", "Auth"},
+		"aliases": []any{"tuplia auth hint"},
+		"links": []any{
+			map[string]any{"relation": "mentions", "target": "Passwordless Auth"},
+		},
+	})
+	if resp["success"] != true {
+		t.Fatalf("remember failed: %v", resp)
+	}
+
+	recall := ts.CallTool(t, "recall", map[string]any{
+		"query": "Auth",
+		"limit": 5,
+	})
+	conceptRecall, ok := recall["concept_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected Auth concept_recall, got %v", recall)
+	}
+	if len(conceptRecall["direct"].([]any)) != 1 {
+		t.Fatalf("expected hinted Auth direct memory, got %v", conceptRecall)
+	}
+
+	update := ts.CallTool(t, "update_memory", map[string]any{
+		"id_or_name": "hinted_tuplia_auth_note",
+		"about":      []any{"Security"},
+	})
+	if update["success"] != true {
+		t.Fatalf("update_memory failed: %v", update)
+	}
+
+	recall = ts.CallTool(t, "recall", map[string]any{
+		"query": "Security",
+		"limit": 5,
+	})
+	conceptRecall, ok = recall["concept_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected Security concept_recall, got %v", recall)
+	}
+	if len(conceptRecall["direct"].([]any)) != 1 {
+		t.Fatalf("expected hinted Security direct memory, got %v", conceptRecall)
 	}
 }
 

@@ -26,6 +26,7 @@ type Memory struct {
 	Agent       string    `json:"agent,omitempty"`
 	Source      string    `json:"source,omitempty"`
 	Checksum    string    `json:"checksum,omitempty"`
+	NodeID      string    `json:"node_id,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -121,7 +122,7 @@ func (s *Store) initMemorySchema() error {
 		return fmt.Errorf("creating memories_vec table: %w", err)
 	}
 
-	return nil
+	return s.initGraphSchema()
 }
 
 // AddMemory inserts a memory and its chunks (with embeddings) atomically.
@@ -157,7 +158,16 @@ func (s *Store) AddMemory(m *Memory, chunkContents []string, chunkEmbeddings [][
 		return fmt.Errorf("inserting memory: %w", err)
 	}
 
+	nodeID, err := ensureMemoryNodeTx(tx, m.ID, m.Name)
+	if err != nil {
+		return err
+	}
+	m.NodeID = nodeID
+
 	if err := insertChunks(tx, m.ID, chunkContents, chunkEmbeddings); err != nil {
+		return err
+	}
+	if err := enqueueGraphHarvestTx(tx); err != nil {
 		return err
 	}
 
@@ -259,7 +269,7 @@ func (s *Store) GetMemoryByName(name string) (*Memory, error) {
 
 func (s *Store) queryMemory(where string, args ...any) (*Memory, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, type, description, body, agent, source, checksum, created_at, updated_at
+		SELECT id, name, type, description, body, agent, source, checksum, node_id, created_at, updated_at
 		FROM memories `+where, args...)
 	m, err := scanMemoryRow(row)
 	if err == sql.ErrNoRows {
@@ -274,7 +284,7 @@ func (s *Store) queryMemory(where string, args ...any) (*Memory, error) {
 // ListMemories returns memories matching the filter, newest first.
 func (s *Store) ListMemories(filter MemoryFilter, limit int) ([]Memory, error) {
 	query := `
-		SELECT id, name, type, description, body, agent, source, checksum, created_at, updated_at
+		SELECT id, name, type, description, body, agent, source, checksum, node_id, created_at, updated_at
 		FROM memories`
 	var args []any
 	if !filter.IsEmpty() {
@@ -339,7 +349,7 @@ func (s *Store) SearchMemories(embedding []float32, limit int, filter MemoryFilt
 			v.distance,
 			c.content,
 			m.id, m.name, m.type, m.description, m.body, m.agent, m.source, m.checksum,
-			m.created_at, m.updated_at
+			m.node_id, m.created_at, m.updated_at
 		FROM memories_vec v
 		JOIN memory_chunks c ON v.id = c.id
 		JOIN memories m ON c.memory_id = m.id
@@ -363,20 +373,20 @@ func (s *Store) SearchMemories(embedding []float32, limit int, filter MemoryFilt
 	var out []MemorySearchResult
 	for rows.Next() {
 		var (
-			distance       float32
-			excerpt        string
-			id, name, typ  string
-			descNS, bodyNS sql.NullString
-			agentNS        sql.NullString
-			sourceNS       sql.NullString
-			checksumNS     sql.NullString
-			createdAt      time.Time
-			updatedAt      time.Time
+			distance             float32
+			excerpt              string
+			id, name, typ        string
+			descNS, bodyNS       sql.NullString
+			agentNS              sql.NullString
+			sourceNS             sql.NullString
+			checksumNS           sql.NullString
+			nodeIDNS             sql.NullString
+			createdAt, updatedAt time.Time
 		)
 		if err := rows.Scan(
 			&distance, &excerpt,
 			&id, &name, &typ, &descNS, &bodyNS, &agentNS, &sourceNS, &checksumNS,
-			&createdAt, &updatedAt,
+			&nodeIDNS, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scanning memory search row: %w", err)
 		}
@@ -399,6 +409,7 @@ func (s *Store) SearchMemories(embedding []float32, limit int, filter MemoryFilt
 				Agent:       agentNS.String,
 				Source:      sourceNS.String,
 				Checksum:    checksumNS.String,
+				NodeID:      nodeIDNS.String,
 				CreatedAt:   createdAt,
 				UpdatedAt:   updatedAt,
 			},
@@ -422,6 +433,18 @@ func (s *Store) DeleteMemoryByID(id string) (bool, error) {
 	}
 	defer tx.Rollback()
 
+	var nodeID sql.NullString
+	err = tx.QueryRow("SELECT node_id FROM memories WHERE id = ?", id).Scan(&nodeID)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("querying memory node: %w", err)
+	}
+
+	if err := deleteMemoryGraphTx(tx, id, nodeID.String); err != nil {
+		return false, err
+	}
 	if err := deleteChunksTx(tx, id); err != nil {
 		return false, err
 	}
@@ -430,6 +453,9 @@ func (s *Store) DeleteMemoryByID(id string) (bool, error) {
 		return false, fmt.Errorf("deleting memory: %w", err)
 	}
 	n, _ := res.RowsAffected()
+	if err := deleteMemoryNodeTx(tx, nodeID.String); err != nil {
+		return false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("committing delete: %w", err)
 	}
@@ -514,10 +540,11 @@ func scanMemoryRow(r rowScanner) (*Memory, error) {
 	var (
 		m                         Memory
 		desc, agent, source, csum sql.NullString
+		nodeID                    sql.NullString
 		createdAt, updatedAt      time.Time
 	)
 	if err := r.Scan(
-		&m.ID, &m.Name, &m.Type, &desc, &m.Body, &agent, &source, &csum,
+		&m.ID, &m.Name, &m.Type, &desc, &m.Body, &agent, &source, &csum, &nodeID,
 		&createdAt, &updatedAt,
 	); err != nil {
 		return nil, err
@@ -526,6 +553,7 @@ func scanMemoryRow(r rowScanner) (*Memory, error) {
 	m.Agent = agent.String
 	m.Source = source.String
 	m.Checksum = csum.String
+	m.NodeID = nodeID.String
 	m.CreatedAt = createdAt
 	m.UpdatedAt = updatedAt
 	return &m, nil

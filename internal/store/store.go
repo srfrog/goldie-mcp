@@ -80,6 +80,14 @@ func New(dbPath string, dimensions int, journalMode string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
+	if err := store.EnqueueGraphBackfillIfNeeded(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enqueueing graph backfill: %w", err)
+	}
+	if err := store.EnqueueGraphHarvestIfNeeded(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enqueueing graph harvest: %w", err)
+	}
 
 	return store, nil
 }

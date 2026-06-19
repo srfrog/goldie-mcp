@@ -211,7 +211,7 @@ func registerTools(s *server.MCPServer) {
 
 	s.AddTool(
 		mcp.NewTool("recall",
-			mcp.WithDescription("Semantic recall over the shared multi-agent memory pool. Prefer this over reading local memory files. Returns the most relevant memories with a matched chunk excerpt (full bodies are omitted by default to keep responses small — pass include_body=true, or follow up with get_memory for the ones you actually need). Filter by type, agent, or source to narrow scope."),
+			mcp.WithDescription("Hybrid recall over the shared multi-agent memory pool. Returns semantic matches with excerpts, plus graph metadata when available: concept_recall for grouped concept neighborhoods and automatic_recall for fallback-safe graph descent. Full bodies are omitted by default — pass include_body=true, or follow up with get_memory for the ones you need. Filter by type, agent, or source to narrow scope."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("The topic or question to recall about")),
 			mcp.WithNumber("limit", mcp.Description("Maximum results to return (default: 5, max: 20)")),
 			mcp.WithString("type", mcp.Description("Filter by memory type")),
@@ -421,6 +421,38 @@ func conceptRecallSummary(recall *store.ConceptRecall) map[string]any {
 	return out
 }
 
+func automaticRecallSummary(recall *store.AutomaticRecall) map[string]any {
+	path := make([]map[string]any, 0, len(recall.Path))
+	for _, item := range recall.Path {
+		path = append(path, map[string]any{
+			"concept": nodeSummary(item.Concept),
+			"score":   item.Score,
+			"reason":  item.Reason,
+		})
+	}
+	candidates := make([]map[string]any, 0, len(recall.Candidates))
+	for _, candidate := range recall.Candidates {
+		candidates = append(candidates, map[string]any{
+			"concept":      nodeSummary(candidate.Concept),
+			"score":        candidate.Score,
+			"memory_count": candidate.MemoryCount,
+		})
+	}
+	memories := make([]map[string]any, 0, len(recall.Memories))
+	for _, m := range recall.Memories {
+		memories = append(memories, memorySummary(m))
+	}
+	return map[string]any{
+		"vantage":     nodeSummary(recall.Vantage),
+		"matched_by":  recall.MatchedBy,
+		"path":        path,
+		"candidates":  candidates,
+		"memories":    memories,
+		"converged":   recall.Converged,
+		"stop_reason": recall.StopReason,
+	}
+}
+
 // --- memory handlers ---
 
 func handleRemember(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -479,7 +511,11 @@ func handleRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 	if conceptErr != nil && errLog != nil {
 		errLog.Printf("concept recall failed: %v", conceptErr)
 	}
-	if len(results) == 0 && conceptRecall == nil {
+	automaticRecall, automaticErr := goldieInstance.RecallAutomatic(query, limit, filter)
+	if automaticErr != nil && errLog != nil {
+		errLog.Printf("automatic recall failed: %v", automaticErr)
+	}
+	if len(results) == 0 && conceptRecall == nil && automaticRecall == nil {
 		return mcp.NewToolResultText(formatMessage("No memories found for %q", query)), nil
 	}
 
@@ -502,6 +538,9 @@ func handleRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 	}
 	if conceptRecall != nil {
 		payload["concept_recall"] = conceptRecallSummary(conceptRecall)
+	}
+	if automaticRecall != nil {
+		payload["automatic_recall"] = automaticRecallSummary(automaticRecall)
 	}
 	return mcp.NewToolResultText(safeJSONMarshal(payload)), nil
 }

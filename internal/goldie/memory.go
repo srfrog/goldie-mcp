@@ -154,6 +154,14 @@ func (g *Goldie) RecallConcept(query string, limit int, filter store.MemoryFilte
 	return g.store.RecallConcept(query, limit, filter)
 }
 
+// RecallAutomatic returns fallback-safe automatic graph recall metadata.
+func (g *Goldie) RecallAutomatic(query string, limit int, filter store.MemoryFilter) (*store.AutomaticRecall, error) {
+	if query == "" {
+		return nil, fmt.Errorf("empty query")
+	}
+	return g.store.RecallAutomatic(query, limit, filter)
+}
+
 // ForgetMemory deletes memories. If query is non-empty, semantic search
 // (constrained by filter) selects up to `limit` candidates and they are
 // deleted. Otherwise every memory matching the filter is deleted. Refuses to

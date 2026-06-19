@@ -617,12 +617,14 @@ This is the launchable v4 boundary.
 
 ### v4.1: Automatic Recall
 
-- Resolve a vantage from exact labels and aliases.
-- Add `nodes_vec` for fuzzy concept resolution.
-- Implement beam descent over weighted graph candidates.
-- Return a compact path, convergence flag, scores, and stop reason.
+- Resolve a vantage from exact labels, aliases, and contained concept labels in the
+  query.
+- Implement deterministic descent over weighted graph candidates.
+- Return a compact path, convergence flag, branch scores, and stop reason as
+  additive `automatic_recall` metadata.
 - Fall back to grouped/flat recall when the gradient is ambiguous.
-- Promote `explain_recall` to a first-class trace tool.
+- Add `nodes_vec` for fuzzy concept resolution in a later v4.1 dot release.
+- Promote `explain_recall` to a first-class trace tool in a later v4.1 dot release.
 - Auto-recall quality is bounded by concept hygiene until v4.2 cleanup tools land.
   Exact duplicates are prevented by `UNIQUE(kind, normalized_label)`, but
   near-duplicates like `Tuplia Cloud` and `Tuplia Cloud Platform` can still flatten or

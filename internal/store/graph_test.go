@@ -2,6 +2,7 @@ package store
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -392,5 +393,66 @@ func TestHarvestReattachKeepsHintOriginAboutEdges(t *testing.T) {
 	}
 	if hintEdges != 1 {
 		t.Fatalf("expected hint edge to survive harvest, got %d", hintEdges)
+	}
+}
+
+func TestAutomaticRecallConvergesOnContainedConcept(t *testing.T) {
+	st := newTestStore(t)
+
+	addTestMemory(t, st, "feedback_tuplia_auth_no_passwords")
+	addTestMemory(t, st, "project_tuplia_auth_policy")
+	addTestMemory(t, st, "tuplia_cloud_passwordless")
+	addTestMemory(t, st, "tuplia_cloud_pricing")
+	if err := st.RefreshHarvestedConcepts(); err != nil {
+		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
+	}
+
+	recall, err := st.RecallAutomatic("how does Tuplia handle auth", 5, MemoryFilter{})
+	if err != nil {
+		t.Fatalf("RecallAutomatic failed: %v", err)
+	}
+	if recall == nil {
+		t.Fatal("expected automatic recall")
+	}
+	if !recall.Converged {
+		t.Fatalf("expected converged recall, stop_reason=%s", recall.StopReason)
+	}
+	if recall.Vantage.Label != "Tuplia Auth" {
+		t.Fatalf("expected Tuplia Auth vantage, got %q", recall.Vantage.Label)
+	}
+	if len(recall.Memories) == 0 {
+		t.Fatal("expected automatic recall memories")
+	}
+	if !strings.Contains(recall.Memories[0].Name, "auth") {
+		t.Fatalf("expected auth memory first, got %q", recall.Memories[0].Name)
+	}
+}
+
+func TestAutomaticRecallFallsBackOnFlatGradient(t *testing.T) {
+	st := newTestStore(t)
+
+	addTestMemory(t, st, "feedback_tuplia_auth_no_passwords")
+	addTestMemory(t, st, "project_tuplia_auth_policy")
+	addTestMemory(t, st, "tuplia_cloud_passwordless")
+	addTestMemory(t, st, "tuplia_cloud_pricing")
+	if err := st.RefreshHarvestedConcepts(); err != nil {
+		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
+	}
+
+	recall, err := st.RecallAutomatic("Tuplia", 5, MemoryFilter{})
+	if err != nil {
+		t.Fatalf("RecallAutomatic failed: %v", err)
+	}
+	if recall == nil {
+		t.Fatal("expected automatic recall")
+	}
+	if recall.Converged {
+		t.Fatalf("expected fallback, got converged path %v", recall.Path)
+	}
+	if recall.StopReason != "flat_gradient" {
+		t.Fatalf("expected flat_gradient, got %q", recall.StopReason)
+	}
+	if len(recall.Candidates) < 2 {
+		t.Fatalf("expected competing branch candidates, got %d", len(recall.Candidates))
 	}
 }

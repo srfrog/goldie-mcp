@@ -730,6 +730,49 @@ func TestMCP_ListNodesShowsHarvestedConcepts(t *testing.T) {
 	}
 }
 
+func TestMCP_RecallIncludesAutomaticRecall(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	for _, name := range []string{
+		"feedback_tuplia_auth_no_passwords",
+		"project_tuplia_auth_policy",
+		"tuplia_cloud_passwordless",
+		"tuplia_cloud_pricing",
+	} {
+		resp := ts.CallTool(t, "remember", map[string]any{
+			"name": name,
+			"type": "project",
+			"body": "Tuplia memory " + name,
+		})
+		if resp["success"] != true {
+			t.Fatalf("remember failed: %v", resp)
+		}
+	}
+
+	waitForGraphHarvest(t, ts)
+
+	resp := ts.CallTool(t, "recall", map[string]any{
+		"query": "how does Tuplia handle auth",
+	})
+	automaticRecall, ok := resp["automatic_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected automatic_recall, got %v", resp)
+	}
+	if automaticRecall["converged"] != true {
+		t.Fatalf("expected automatic recall to converge, got %v", automaticRecall)
+	}
+	vantage := automaticRecall["vantage"].(map[string]any)
+	if vantage["label"] != "Tuplia Auth" {
+		t.Fatalf("expected Tuplia Auth vantage, got %v", vantage)
+	}
+	memories := automaticRecall["memories"].([]any)
+	if len(memories) == 0 {
+		t.Fatalf("expected automatic recall memories, got %v", automaticRecall)
+	}
+}
+
 func TestMCP_GetMemory(t *testing.T) {
 	ts := NewTestSetup(t)
 	defer ts.Cleanup()

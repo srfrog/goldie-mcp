@@ -18,6 +18,8 @@ Goldie v4 adds a graph layer beside semantic search. Each memory has a `memory` 
 
 `recall` remains backward-compatible: it still returns the flat `results` list. When a query resolves to a concept, the response also includes `concept_recall` with the matched concept, facet groups, and directly attached memories. Clients that ignore `concept_recall` continue to work.
 
+When a query contains a known concept or facet, `recall` can also include `automatic_recall`: an inspectable graph path with branch scores, convergence status, and a stop reason. Ambiguous queries fall back instead of forcing a precise answer.
+
 Graph harvest runs asynchronously. `remember` creates the memory and memory node, then queues a debounced `graph_harvest` job so concept extraction does not hold the write lock. Existing databases are backfilled through the same job queue.
 
 ## Requirements

@@ -47,6 +47,28 @@ type ConceptRecallGroup struct {
 	Memories []Memory
 }
 
+type AutomaticRecall struct {
+	Vantage    Node
+	MatchedBy  string
+	Path       []AutomaticRecallPathItem
+	Candidates []AutomaticRecallCandidate
+	Memories   []Memory
+	Converged  bool
+	StopReason string
+}
+
+type AutomaticRecallPathItem struct {
+	Concept Node
+	Score   float64
+	Reason  string
+}
+
+type AutomaticRecallCandidate struct {
+	Concept     Node
+	Score       float64
+	MemoryCount int
+}
+
 func (s *Store) initGraphSchema() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS nodes (
@@ -803,6 +825,66 @@ func equalTokens(a, b []string) bool {
 	return true
 }
 
+func containsTokenSubsequence(tokens, candidate []string) bool {
+	if len(candidate) == 0 || len(candidate) > len(tokens) {
+		return false
+	}
+	idx := 0
+	for _, token := range tokens {
+		if token == candidate[idx] {
+			idx++
+			if idx == len(candidate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func conceptQueryScore(queryTokens []string, concept Node) float64 {
+	return 3 * tokenOverlapScore(queryTokens, strings.Fields(concept.NormalizedLabel))
+}
+
+func bestMemoryQueryScore(queryTokens []string, memories []Memory) float64 {
+	best := 0.0
+	for _, memory := range memories {
+		if score := memoryQueryScore(queryTokens, memory); score > best {
+			best = score
+		}
+	}
+	return best
+}
+
+func memoryQueryScore(queryTokens []string, memory Memory) float64 {
+	var memoryTokens []string
+	memoryTokens = append(memoryTokens, splitConceptTokens(memory.Name)...)
+	memoryTokens = append(memoryTokens, splitConceptTokens(memory.Description)...)
+	memoryTokens = append(memoryTokens, splitConceptTokens(memory.Source)...)
+	return tokenOverlapScore(queryTokens, memoryTokens)
+}
+
+func tokenOverlapScore(queryTokens, targetTokens []string) float64 {
+	if len(queryTokens) == 0 || len(targetTokens) == 0 {
+		return 0
+	}
+	target := make(map[string]struct{}, len(targetTokens))
+	for _, token := range targetTokens {
+		target[token] = struct{}{}
+	}
+	score := 0.0
+	seen := map[string]struct{}{}
+	for _, token := range queryTokens {
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		if _, ok := target[token]; ok {
+			score++
+		}
+	}
+	return score
+}
+
 func tokenCount(s string) int {
 	return len(strings.Fields(s))
 }
@@ -920,6 +1002,99 @@ func (s *Store) RecallConcept(query string, limit int, filter MemoryFilter) (*Co
 	return recall, nil
 }
 
+// RecallAutomatic follows the strongest graph branch for a query and returns
+// inspectable metadata. It is fallback-safe: ambiguous or weak gradients return a
+// stop reason instead of pretending to have found a precise memory.
+func (s *Store) RecallAutomatic(query string, limit int, filter MemoryFilter) (*AutomaticRecall, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	queryTokens := splitConceptTokens(query)
+	if len(queryTokens) == 0 {
+		return nil, nil
+	}
+
+	vantage, matchedBy, err := s.resolveAutomaticVantage(query, queryTokens)
+	if err != nil || vantage == nil {
+		return nil, err
+	}
+
+	recall := &AutomaticRecall{
+		Vantage:   *vantage,
+		MatchedBy: matchedBy,
+		Path: []AutomaticRecallPathItem{{
+			Concept: *vantage,
+			Reason:  matchedBy,
+		}},
+	}
+
+	current := *vantage
+	const (
+		maxDepth  = 3
+		minScore  = 1.0
+		minMargin = 1.0
+	)
+	for depth := 0; depth < maxDepth; depth++ {
+		candidates, err := s.automaticChildCandidates(current, queryTokens, limit, filter)
+		if err != nil {
+			return nil, err
+		}
+		if depth == 0 {
+			recall.Candidates = candidates
+		}
+		if len(candidates) == 0 {
+			memories, err := s.rankedMemoriesForConcept(current.ID, queryTokens, limit, filter)
+			if err != nil {
+				return nil, err
+			}
+			recall.Memories = memories
+			recall.Converged = len(memories) > 0
+			recall.StopReason = "leaf"
+			if !recall.Converged {
+				recall.StopReason = "no_memories"
+			}
+			return recall, nil
+		}
+
+		best := candidates[0]
+		if best.Score < minScore {
+			recall.StopReason = "no_signal"
+			return recall, nil
+		}
+		if len(candidates) > 1 && best.Score-candidates[1].Score < minMargin {
+			recall.StopReason = "flat_gradient"
+			return recall, nil
+		}
+
+		current = best.Concept
+		recall.Path = append(recall.Path, AutomaticRecallPathItem{
+			Concept: current,
+			Score:   best.Score,
+			Reason:  "strongest_graph_branch",
+		})
+	}
+
+	memories, err := s.rankedMemoriesForConcept(current.ID, queryTokens, limit, filter)
+	if err != nil {
+		return nil, err
+	}
+	recall.Memories = memories
+	recall.Converged = len(memories) > 0
+	recall.StopReason = "max_depth"
+	if recall.Converged {
+		recall.StopReason = "converged"
+	}
+	return recall, nil
+}
+
+func (s *Store) resolveAutomaticVantage(query string, queryTokens []string) (*Node, string, error) {
+	concept, err := s.findConcept(query)
+	if err != nil || concept != nil {
+		return concept, "exact", err
+	}
+	return s.findConceptContainedInQuery(queryTokens)
+}
+
 func (s *Store) findConcept(query string) (*Node, error) {
 	normalized := NormalizeLabel(query)
 	if normalized == "" {
@@ -943,6 +1118,74 @@ func (s *Store) findConcept(query string) (*Node, error) {
 	`, NodeKindConcept, normalized)
 }
 
+func (s *Store) findConceptContainedInQuery(queryTokens []string) (*Node, string, error) {
+	rows, err := s.db.Query(`
+		SELECT id, kind, label, normalized_label
+		FROM nodes
+		WHERE kind = ?
+		ORDER BY label
+	`, NodeKindConcept)
+	if err != nil {
+		return nil, "", fmt.Errorf("querying concept candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var best *Node
+	bestSize := 0
+	for rows.Next() {
+		var node Node
+		if err := rows.Scan(&node.ID, &node.Kind, &node.Label, &node.NormalizedLabel); err != nil {
+			return nil, "", fmt.Errorf("scanning concept candidate: %w", err)
+		}
+		tokens := strings.Fields(node.NormalizedLabel)
+		if len(tokens) <= bestSize || !containsTokenSubsequence(queryTokens, tokens) {
+			continue
+		}
+		best = &node
+		bestSize = len(tokens)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	if best != nil {
+		return best, "contained_label", nil
+	}
+
+	aliasRows, err := s.db.Query(`
+		SELECT n.id, n.kind, n.label, n.normalized_label, a.normalized_alias
+		FROM node_aliases a
+		JOIN nodes n ON a.node_id = n.id
+		WHERE n.kind = ?
+		ORDER BY n.label
+	`, NodeKindConcept)
+	if err != nil {
+		return nil, "", fmt.Errorf("querying alias candidates: %w", err)
+	}
+	defer aliasRows.Close()
+
+	bestSize = 0
+	for aliasRows.Next() {
+		var node Node
+		var alias string
+		if err := aliasRows.Scan(&node.ID, &node.Kind, &node.Label, &node.NormalizedLabel, &alias); err != nil {
+			return nil, "", fmt.Errorf("scanning alias candidate: %w", err)
+		}
+		tokens := strings.Fields(alias)
+		if len(tokens) <= bestSize || !containsTokenSubsequence(queryTokens, tokens) {
+			continue
+		}
+		best = &node
+		bestSize = len(tokens)
+	}
+	if err := aliasRows.Err(); err != nil {
+		return nil, "", err
+	}
+	if best != nil {
+		return best, "contained_alias", nil
+	}
+	return nil, "", nil
+}
+
 func (s *Store) queryNode(query string, args ...any) (*Node, error) {
 	var node Node
 	err := s.db.QueryRow(query, args...).Scan(
@@ -958,6 +1201,55 @@ func (s *Store) queryNode(query string, args ...any) (*Node, error) {
 		return nil, fmt.Errorf("querying graph node: %w", err)
 	}
 	return &node, nil
+}
+
+func (s *Store) automaticChildCandidates(parent Node, queryTokens []string, limit int, filter MemoryFilter) ([]AutomaticRecallCandidate, error) {
+	children, err := s.childConcepts(parent.ID)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]AutomaticRecallCandidate, 0, len(children))
+	for _, child := range children {
+		memories, err := s.memoriesForConcept(child.ID, limit, filter)
+		if err != nil {
+			return nil, err
+		}
+		score := conceptQueryScore(queryTokens, child) + bestMemoryQueryScore(queryTokens, memories)
+		candidates = append(candidates, AutomaticRecallCandidate{
+			Concept:     child,
+			Score:       score,
+			MemoryCount: len(memories),
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Score == candidates[j].Score {
+			return candidates[i].Concept.Label < candidates[j].Concept.Label
+		}
+		return candidates[i].Score > candidates[j].Score
+	})
+	if len(candidates) > 5 {
+		candidates = candidates[:5]
+	}
+	return candidates, nil
+}
+
+func (s *Store) rankedMemoriesForConcept(conceptID string, queryTokens []string, limit int, filter MemoryFilter) ([]Memory, error) {
+	memories, err := s.memoriesForConcept(conceptID, 0, filter)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(memories, func(i, j int) bool {
+		left := memoryQueryScore(queryTokens, memories[i])
+		right := memoryQueryScore(queryTokens, memories[j])
+		if left == right {
+			return memories[i].UpdatedAt.After(memories[j].UpdatedAt)
+		}
+		return left > right
+	})
+	if limit > 0 && len(memories) > limit {
+		memories = memories[:limit]
+	}
+	return memories, nil
 }
 
 func (s *Store) childConcepts(parentID string) ([]Node, error) {

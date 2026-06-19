@@ -22,6 +22,22 @@ When a query contains a known concept or facet, `recall` can also include `autom
 
 Graph harvest runs asynchronously. `remember` creates the memory and memory node, then queues a debounced `graph_harvest` job so concept extraction does not hold the write lock. Existing databases are backfilled through the same job queue.
 
+Optional graph hints can reinforce the harvested graph. `about` attaches a memory to concept labels, `aliases` adds alternate names to the memory node, and `links` adds explicit graph edges as `{relation, target}` objects. Hint-origin edges and aliases are preserved across harvest.
+
+Graph inspection and cleanup tools are available for maintenance: `list_nodes`, `get_node`, and `explain_recall` show what the graph is doing; `link_memory` manually attaches a memory to a concept; `merge_nodes` merges duplicate concepts with collision-safe edge and alias movement.
+
+## Upgrading Existing Databases
+
+Goldie v4 upgrades existing SQLite databases in place. On first launch it adds the graph tables, memory node references, and concept-node vector index. Existing memories keep working immediately through normal vector recall while graph backfill runs asynchronously.
+
+Before first v4 launch, back up the database if it contains important memories:
+
+```bash
+cp ~/.local/share/goldie/index.db ~/.local/share/goldie/index.db.v3-backup
+```
+
+Backfill jobs use the same async queue as file indexing. Use `list_jobs` and `job_status` to inspect progress.
+
 ## Requirements
 
 ### MiniLM Backend (requires ONNX Runtime)
@@ -228,6 +244,8 @@ Goldie's index is a flat pool of **memories**. Each memory has these fields:
 
 **File ingestion.** `index_file` / `index_directory` are the *one* exception to the no-upsert rule. They import files as memories of `type=reference`, with `name = source = <absolute path>`. Re-indexing the same path skips when the SHA-256 checksum matches and replaces the body when it doesn't.
 
+**Graph hints.** Plain `remember` is enough for v4 graph recall: Goldie harvests concepts from memory names and file/source paths. Optional `about`, `aliases`, and `links` hints add user-provided graph structure when the name alone is not enough. Hinted graph data is preserved across future harvest runs.
+
 ## Available Tools
 
 ### remember
@@ -247,12 +265,20 @@ Create a new memory. Fails if `name` is already in use — recall it and use `up
 
 ### recall
 
-Semantic recall over memories. Returns the most relevant memories plus the matched chunk excerpt. Filter by type, agent, or source to narrow scope.
+Hybrid recall over memories. Always returns the backward-compatible flat `results` list with the best matched excerpt for each memory. When the query resolves to graph concepts, the response may also include grouped `concept_recall` and inspectable `automatic_recall` metadata. Filter by type, agent, or source to narrow scope.
 
 **Parameters:**
 - `query` (required): Topic or question
 - `limit` (optional): Max results (default 5, max 20)
+- `include_body` (optional): Include full memory bodies instead of metadata plus excerpts
 - `type`, `agent`, `source` (optional): Filters
+
+### get_memory
+
+Fetch a single memory's full record, including body, by id or name. Use this after recall when an excerpt is relevant and you need the full stored content.
+
+**Parameters:**
+- `id_or_name` (required): Memory id or name
 
 ### update_memory
 
@@ -334,6 +360,7 @@ Import a file as a `reference` memory. The memory's `name` is the absolute path;
 
 **Parameters:**
 - `path` (required)
+- `agent` (optional): Agent that triggered the import
 
 ### index_directory
 
@@ -343,10 +370,11 @@ Import every matching file in a directory as `reference` memories.
 - `directory` (required)
 - `pattern` (optional, default `*`)
 - `recursive` (optional, default `false`)
+- `agent` (optional): Agent that triggered the import
 
 ### job_status, list_jobs, clear_queue
 
-Manage the async indexing queue. `index_file` and `index_directory` enqueue jobs that complete in the background; use `job_status` to check progress.
+Manage the async job queue. File indexing, graph harvest, and graph backfill jobs complete in the background; use `job_status` to check progress.
 
 ## Skip Patterns
 
@@ -429,6 +457,14 @@ Recall feedback memories about pull request size
 
 ```
 What memories do I have about the API design?
+```
+
+```
+Explain recall for "how does Tuplia handle auth"
+```
+
+```
+List concept nodes matching Tuplia
 ```
 
 ### update_memory
@@ -553,8 +589,8 @@ When copying binaries on macOS, Gatekeeper may add quarantine attributes (`com.a
 
 ### Codex is not recalling
 
-- MCP support in Codex is experimental and it needs a bit more coaxing to work propertly. After indexing content, try to `recall <topic>` and check that it uses the `goldie.recall()` function, that indicates it's using the MCP backend.
-- Codex sometimes doesn't trust the content from recall, and won't add it to the context, requiring redundant calls to `goldie.search_index()`. You can try with `recall <topic> and consolidate` to push the update.
+- MCP support in Codex is experimental and it needs a bit more coaxing to work properly. After indexing content, try to `recall <topic>` and check that it uses the `goldie.recall()` function; that indicates it's using the MCP backend.
+- Codex sometimes doesn't trust the content from recall and won't add it to the context. Try `recall <topic> and consolidate` to push the update.
 
 ## Architecture
 
@@ -586,7 +622,7 @@ Core SQLite tables make up the memory index:
 - `nodes`, `node_aliases`, `edges` — graph layer for memory nodes, harvested concepts, aliases, and relationships
 - `nodes_vec` — `vec0` virtual table over concept node embeddings for fuzzy concept resolution
 
-Recall does KNN over chunks, then dedupes to distinct memories, returning the best-matching excerpt for each.
+Recall does KNN over chunks, dedupes to distinct memories, and then augments the flat results with graph groups and automatic graph-descent metadata when the query matches known concepts.
 
 ## Embedding Backends
 

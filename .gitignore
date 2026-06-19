@@ -40,3 +40,6 @@ __debug_bin*
 *.db-journal
 *.db-shm
 *.db-wal
+
+# Local planning notes
+docs/v4-auto-graph-recall.md

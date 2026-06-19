@@ -654,11 +654,11 @@ func TestMCP_RecallIncludesConceptGroups(t *testing.T) {
 	defer ts.Cleanup()
 	ts.SetupGlobals()
 
-	for _, name := range []string{"tuplia_cloud_passwordless_auth", "tuplia_cloud_pricing"} {
+	for _, name := range []string{"acme_cloud_passwordless_auth", "acme_cloud_pricing"} {
 		resp := ts.CallTool(t, "remember", map[string]any{
 			"name": name,
 			"type": "project",
-			"body": "Tuplia Cloud memory " + name,
+			"body": "Acme Cloud memory " + name,
 		})
 		if resp["success"] != true {
 			t.Fatalf("remember failed: %v", resp)
@@ -668,15 +668,15 @@ func TestMCP_RecallIncludesConceptGroups(t *testing.T) {
 	waitForGraphHarvest(t, ts)
 
 	resp := ts.CallTool(t, "recall", map[string]any{
-		"query": "Tuplia",
+		"query": "Acme",
 	})
 	conceptRecall, ok := resp["concept_recall"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected concept_recall, got %v", resp)
 	}
 	concept := conceptRecall["concept"].(map[string]any)
-	if concept["label"] != "Tuplia" {
-		t.Fatalf("expected Tuplia concept, got %v", concept)
+	if concept["label"] != "Acme" {
+		t.Fatalf("expected Acme concept, got %v", concept)
 	}
 	groups := conceptRecall["groups"].([]any)
 	if len(groups) != 1 {
@@ -684,8 +684,8 @@ func TestMCP_RecallIncludesConceptGroups(t *testing.T) {
 	}
 	group := groups[0].(map[string]any)
 	groupConcept := group["concept"].(map[string]any)
-	if groupConcept["label"] != "Tuplia Cloud" {
-		t.Fatalf("expected Tuplia Cloud group, got %v", groupConcept)
+	if groupConcept["label"] != "Acme Cloud" {
+		t.Fatalf("expected Acme Cloud group, got %v", groupConcept)
 	}
 }
 
@@ -694,11 +694,11 @@ func TestMCP_ListNodesShowsHarvestedConcepts(t *testing.T) {
 	defer ts.Cleanup()
 	ts.SetupGlobals()
 
-	for _, name := range []string{"tuplia_cloud_passwordless_auth", "tuplia_cloud_pricing"} {
+	for _, name := range []string{"acme_cloud_passwordless_auth", "acme_cloud_pricing"} {
 		resp := ts.CallTool(t, "remember", map[string]any{
 			"name": name,
 			"type": "project",
-			"body": "Tuplia Cloud memory " + name,
+			"body": "Acme Cloud memory " + name,
 		})
 		if resp["success"] != true {
 			t.Fatalf("remember failed: %v", resp)
@@ -709,7 +709,7 @@ func TestMCP_ListNodesShowsHarvestedConcepts(t *testing.T) {
 
 	resp := ts.CallTool(t, "list_nodes", map[string]any{
 		"kind":  "concept",
-		"query": "Tuplia",
+		"query": "Acme",
 	})
 	nodes, ok := resp["nodes"].([]any)
 	if !ok || len(nodes) == 0 {
@@ -721,20 +721,20 @@ func TestMCP_ListNodesShowsHarvestedConcepts(t *testing.T) {
 		node := raw.(map[string]any)
 		label, _ := node["label"].(string)
 		labels[label] = true
-		if label == "Tuplia Cloud" {
+		if label == "Acme Cloud" {
 			if node["incoming_count"].(float64) == 0 {
-				t.Fatalf("expected Tuplia Cloud incoming edge count, got %v", node)
+				t.Fatalf("expected Acme Cloud incoming edge count, got %v", node)
 			}
 			if node["outgoing_count"].(float64) == 0 {
-				t.Fatalf("expected Tuplia Cloud outgoing edge count, got %v", node)
+				t.Fatalf("expected Acme Cloud outgoing edge count, got %v", node)
 			}
 		}
 	}
-	if !labels["Tuplia"] {
-		t.Fatalf("expected Tuplia concept in %v", nodes)
+	if !labels["Acme"] {
+		t.Fatalf("expected Acme concept in %v", nodes)
 	}
-	if !labels["Tuplia Cloud"] {
-		t.Fatalf("expected Tuplia Cloud concept in %v", nodes)
+	if !labels["Acme Cloud"] {
+		t.Fatalf("expected Acme Cloud concept in %v", nodes)
 	}
 }
 
@@ -744,15 +744,15 @@ func TestMCP_RecallIncludesAutomaticRecall(t *testing.T) {
 	ts.SetupGlobals()
 
 	for _, name := range []string{
-		"feedback_tuplia_auth_no_passwords",
-		"project_tuplia_auth_policy",
-		"tuplia_cloud_passwordless",
-		"tuplia_cloud_pricing",
+		"feedback_acme_auth_no_passwords",
+		"project_acme_auth_policy",
+		"acme_cloud_passwordless",
+		"acme_cloud_pricing",
 	} {
 		resp := ts.CallTool(t, "remember", map[string]any{
 			"name": name,
 			"type": "project",
-			"body": "Tuplia memory " + name,
+			"body": "Acme memory " + name,
 		})
 		if resp["success"] != true {
 			t.Fatalf("remember failed: %v", resp)
@@ -770,7 +770,7 @@ func TestMCP_RecallIncludesAutomaticRecall(t *testing.T) {
 	}
 
 	resp := ts.CallTool(t, "recall", map[string]any{
-		"query": "how does Tuplia handle auth",
+		"query": "how does Acme handle auth",
 	})
 	automaticRecall, ok := resp["automatic_recall"].(map[string]any)
 	if !ok {
@@ -780,8 +780,8 @@ func TestMCP_RecallIncludesAutomaticRecall(t *testing.T) {
 		t.Fatalf("expected automatic recall to converge, got %v", automaticRecall)
 	}
 	vantage := automaticRecall["vantage"].(map[string]any)
-	if vantage["label"] != "Tuplia Auth" {
-		t.Fatalf("expected Tuplia Auth vantage, got %v", vantage)
+	if vantage["label"] != "Acme Auth" {
+		t.Fatalf("expected Acme Auth vantage, got %v", vantage)
 	}
 	memories := automaticRecall["memories"].([]any)
 	if len(memories) == 0 {
@@ -789,7 +789,7 @@ func TestMCP_RecallIncludesAutomaticRecall(t *testing.T) {
 	}
 
 	explain := ts.CallTool(t, "explain_recall", map[string]any{
-		"query": "how does Tuplia handle auth",
+		"query": "how does Acme handle auth",
 	})
 	if _, ok := explain["vector_results"].([]any); !ok {
 		t.Fatalf("expected vector_results in explain_recall, got %v", explain)
@@ -882,11 +882,11 @@ func TestMCP_RememberAndUpdateApplyGraphHints(t *testing.T) {
 	ts.SetupGlobals()
 
 	resp := ts.CallTool(t, "remember", map[string]any{
-		"name":    "hinted_tuplia_auth_note",
+		"name":    "hinted_acme_auth_note",
 		"type":    "project",
-		"body":    "Tuplia auth hint body",
-		"about":   []any{"Tuplia", "Auth"},
-		"aliases": []any{"tuplia auth hint"},
+		"body":    "Acme auth hint body",
+		"about":   []any{"Acme", "Auth"},
+		"aliases": []any{"acme auth hint"},
 		"links": []any{
 			map[string]any{"relation": "mentions", "target": "Passwordless Auth"},
 		},
@@ -908,7 +908,7 @@ func TestMCP_RememberAndUpdateApplyGraphHints(t *testing.T) {
 	}
 
 	update := ts.CallTool(t, "update_memory", map[string]any{
-		"id_or_name": "hinted_tuplia_auth_note",
+		"id_or_name": "hinted_acme_auth_note",
 		"about":      []any{"Security"},
 	})
 	if update["success"] != true {

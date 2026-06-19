@@ -114,7 +114,7 @@ func TestMemoryNodeInspectionFindsMemoryName(t *testing.T) {
 func TestAddMemoryEnqueuesGraphHarvestWithoutRunningIt(t *testing.T) {
 	st := newTestStore(t)
 
-	addTestMemory(t, st, "tuplia_cloud_auth")
+	addTestMemory(t, st, "acme_cloud_auth")
 
 	jobs, err := st.ListJobs(JobStatusQueued)
 	if err != nil {
@@ -225,48 +225,48 @@ func TestEnqueueGraphBackfillIfNeeded(t *testing.T) {
 func TestHarvestedConceptRecallGroupsFacets(t *testing.T) {
 	st := newTestStore(t)
 
-	addTestMemory(t, st, "tuplia_cloud_passwordless_auth")
-	addTestMemory(t, st, "tuplia_cloud_pricing")
-	addTestMemory(t, st, "tuplia_deployment_modes")
+	addTestMemory(t, st, "acme_cloud_passwordless_auth")
+	addTestMemory(t, st, "acme_cloud_pricing")
+	addTestMemory(t, st, "acme_deployment_modes")
 	if err := st.RefreshHarvestedConcepts(); err != nil {
 		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	recall, err := st.RecallConcept("Tuplia", 10, MemoryFilter{})
+	recall, err := st.RecallConcept("Acme", 10, MemoryFilter{})
 	if err != nil {
 		t.Fatalf("RecallConcept failed: %v", err)
 	}
 	if recall == nil {
-		t.Fatal("expected Tuplia concept recall")
+		t.Fatal("expected Acme concept recall")
 	}
-	if recall.Concept.Label != "Tuplia" {
-		t.Fatalf("expected Tuplia concept, got %q", recall.Concept.Label)
+	if recall.Concept.Label != "Acme" {
+		t.Fatalf("expected Acme concept, got %q", recall.Concept.Label)
 	}
 	if len(recall.Groups) != 1 {
 		t.Fatalf("expected 1 facet group, got %d", len(recall.Groups))
 	}
-	if recall.Groups[0].Concept.Label != "Tuplia Cloud" {
-		t.Fatalf("expected Tuplia Cloud facet, got %q", recall.Groups[0].Concept.Label)
+	if recall.Groups[0].Concept.Label != "Acme Cloud" {
+		t.Fatalf("expected Acme Cloud facet, got %q", recall.Groups[0].Concept.Label)
 	}
 	if len(recall.Groups[0].Memories) != 2 {
-		t.Fatalf("expected 2 Tuplia Cloud memories, got %d", len(recall.Groups[0].Memories))
+		t.Fatalf("expected 2 Acme Cloud memories, got %d", len(recall.Groups[0].Memories))
 	}
 	if len(recall.Direct) != 1 {
-		t.Fatalf("expected 1 direct Tuplia memory, got %d", len(recall.Direct))
+		t.Fatalf("expected 1 direct Acme memory, got %d", len(recall.Direct))
 	}
-	if recall.Direct[0].Name != "tuplia_deployment_modes" {
-		t.Fatalf("expected direct memory tuplia_deployment_modes, got %q", recall.Direct[0].Name)
+	if recall.Direct[0].Name != "acme_deployment_modes" {
+		t.Fatalf("expected direct memory acme_deployment_modes, got %q", recall.Direct[0].Name)
 	}
 }
 
 func TestHarvestStripsMemoryTypePrefix(t *testing.T) {
 	st := newTestStore(t)
 
-	m1 := &Memory{Name: "feedback_tuplia_auth_no_passwords", Type: "feedback", Body: "body"}
+	m1 := &Memory{Name: "feedback_acme_auth_no_passwords", Type: "feedback", Body: "body"}
 	if err := st.AddMemory(m1, []string{m1.Body}, [][]float32{{0.1, 0.2, 0.3}}); err != nil {
 		t.Fatalf("AddMemory m1 failed: %v", err)
 	}
-	m2 := &Memory{Name: "project_tuplia_auth_policy", Type: "project", Body: "body"}
+	m2 := &Memory{Name: "project_acme_auth_policy", Type: "project", Body: "body"}
 	if err := st.AddMemory(m2, []string{m2.Body}, [][]float32{{0.1, 0.2, 0.3}}); err != nil {
 		t.Fatalf("AddMemory m2 failed: %v", err)
 	}
@@ -274,30 +274,30 @@ func TestHarvestStripsMemoryTypePrefix(t *testing.T) {
 		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	recall, err := st.RecallConcept("Tuplia", 10, MemoryFilter{})
+	recall, err := st.RecallConcept("Acme", 10, MemoryFilter{})
 	if err != nil {
 		t.Fatalf("RecallConcept failed: %v", err)
 	}
 	if recall == nil {
-		t.Fatal("expected Tuplia concept recall")
+		t.Fatal("expected Acme concept recall")
 	}
 	if len(recall.Groups) != 1 {
 		t.Fatalf("expected 1 facet group, got %d", len(recall.Groups))
 	}
-	if recall.Groups[0].Concept.Label != "Tuplia Auth" {
-		t.Fatalf("expected Tuplia Auth facet, got %q", recall.Groups[0].Concept.Label)
+	if recall.Groups[0].Concept.Label != "Acme Auth" {
+		t.Fatalf("expected Acme Auth facet, got %q", recall.Groups[0].Concept.Label)
 	}
 }
 
 func TestHarvestFindsRootInsideNameWhenSeededByPath(t *testing.T) {
 	st := newTestStore(t)
 
-	for _, name := range []string{"note_tuplia_cloud_auth", "decision_tuplia_cloud_pricing"} {
+	for _, name := range []string{"note_acme_cloud_auth", "decision_acme_cloud_pricing"} {
 		m := &Memory{
 			Name:   name,
 			Type:   "project",
 			Body:   "body",
-			Source: "/Users/srfrog/Documents/Business/Tuplia/context.md",
+			Source: "/Users/srfrog/Documents/Business/Acme/context.md",
 		}
 		if err := st.AddMemory(m, []string{m.Body}, [][]float32{{0.1, 0.2, 0.3}}); err != nil {
 			t.Fatalf("AddMemory %s failed: %v", name, err)
@@ -307,18 +307,18 @@ func TestHarvestFindsRootInsideNameWhenSeededByPath(t *testing.T) {
 		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	recall, err := st.RecallConcept("Tuplia", 10, MemoryFilter{})
+	recall, err := st.RecallConcept("Acme", 10, MemoryFilter{})
 	if err != nil {
 		t.Fatalf("RecallConcept failed: %v", err)
 	}
 	if recall == nil {
-		t.Fatal("expected Tuplia concept recall")
+		t.Fatal("expected Acme concept recall")
 	}
 	if len(recall.Groups) != 1 {
 		t.Fatalf("expected 1 facet group, got %d", len(recall.Groups))
 	}
-	if recall.Groups[0].Concept.Label != "Tuplia Cloud" {
-		t.Fatalf("expected Tuplia Cloud facet, got %q", recall.Groups[0].Concept.Label)
+	if recall.Groups[0].Concept.Label != "Acme Cloud" {
+		t.Fatalf("expected Acme Cloud facet, got %q", recall.Groups[0].Concept.Label)
 	}
 }
 
@@ -326,10 +326,10 @@ func TestHarvestReattachesFromRootToPromotedFacet(t *testing.T) {
 	st := newTestStore(t)
 
 	m1 := &Memory{
-		Name:   "note_tuplia_cloud_auth",
+		Name:   "note_acme_cloud_auth",
 		Type:   "project",
 		Body:   "body",
-		Source: "/Users/srfrog/Documents/Business/Tuplia/context.md",
+		Source: "/Users/srfrog/Documents/Business/Acme/context.md",
 	}
 	if err := st.AddMemory(m1, []string{m1.Body}, [][]float32{{0.1, 0.2, 0.3}}); err != nil {
 		t.Fatalf("AddMemory m1 failed: %v", err)
@@ -338,7 +338,7 @@ func TestHarvestReattachesFromRootToPromotedFacet(t *testing.T) {
 		t.Fatalf("first RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	recall, err := st.RecallConcept("Tuplia", 10, MemoryFilter{})
+	recall, err := st.RecallConcept("Acme", 10, MemoryFilter{})
 	if err != nil {
 		t.Fatalf("first RecallConcept failed: %v", err)
 	}
@@ -347,10 +347,10 @@ func TestHarvestReattachesFromRootToPromotedFacet(t *testing.T) {
 	}
 
 	m2 := &Memory{
-		Name:   "decision_tuplia_cloud_pricing",
+		Name:   "decision_acme_cloud_pricing",
 		Type:   "project",
 		Body:   "body",
-		Source: "/Users/srfrog/Documents/Business/Tuplia/context.md",
+		Source: "/Users/srfrog/Documents/Business/Acme/context.md",
 	}
 	if err := st.AddMemory(m2, []string{m2.Body}, [][]float32{{0.1, 0.2, 0.3}}); err != nil {
 		t.Fatalf("AddMemory m2 failed: %v", err)
@@ -359,7 +359,7 @@ func TestHarvestReattachesFromRootToPromotedFacet(t *testing.T) {
 		t.Fatalf("second RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	recall, err = st.RecallConcept("Tuplia", 10, MemoryFilter{})
+	recall, err = st.RecallConcept("Acme", 10, MemoryFilter{})
 	if err != nil {
 		t.Fatalf("second RecallConcept failed: %v", err)
 	}
@@ -378,10 +378,10 @@ func TestHarvestReattachKeepsHintOriginAboutEdges(t *testing.T) {
 	st := newTestStore(t)
 
 	m := &Memory{
-		Name:   "note_tuplia_cloud_auth",
+		Name:   "note_acme_cloud_auth",
 		Type:   "project",
 		Body:   "body",
-		Source: "/Users/srfrog/Documents/Business/Tuplia/context.md",
+		Source: "/Users/srfrog/Documents/Business/Acme/context.md",
 	}
 	if err := st.AddMemory(m, []string{m.Body}, [][]float32{{0.1, 0.2, 0.3}}); err != nil {
 		t.Fatalf("AddMemory failed: %v", err)
@@ -427,15 +427,15 @@ func TestHarvestReattachKeepsHintOriginAboutEdges(t *testing.T) {
 func TestAutomaticRecallConvergesOnContainedConcept(t *testing.T) {
 	st := newTestStore(t)
 
-	addTestMemory(t, st, "feedback_tuplia_auth_no_passwords")
-	addTestMemory(t, st, "project_tuplia_auth_policy")
-	addTestMemory(t, st, "tuplia_cloud_passwordless")
-	addTestMemory(t, st, "tuplia_cloud_pricing")
+	addTestMemory(t, st, "feedback_acme_auth_no_passwords")
+	addTestMemory(t, st, "project_acme_auth_policy")
+	addTestMemory(t, st, "acme_cloud_passwordless")
+	addTestMemory(t, st, "acme_cloud_pricing")
 	if err := st.RefreshHarvestedConcepts(); err != nil {
 		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	recall, err := st.RecallAutomatic("how does Tuplia handle auth", nil, 5, MemoryFilter{})
+	recall, err := st.RecallAutomatic("how does Acme handle auth", nil, 5, MemoryFilter{})
 	if err != nil {
 		t.Fatalf("RecallAutomatic failed: %v", err)
 	}
@@ -445,8 +445,8 @@ func TestAutomaticRecallConvergesOnContainedConcept(t *testing.T) {
 	if !recall.Converged {
 		t.Fatalf("expected converged recall, stop_reason=%s", recall.StopReason)
 	}
-	if recall.Vantage.Label != "Tuplia Auth" {
-		t.Fatalf("expected Tuplia Auth vantage, got %q", recall.Vantage.Label)
+	if recall.Vantage.Label != "Acme Auth" {
+		t.Fatalf("expected Acme Auth vantage, got %q", recall.Vantage.Label)
 	}
 	if len(recall.Memories) == 0 {
 		t.Fatal("expected automatic recall memories")
@@ -459,15 +459,15 @@ func TestAutomaticRecallConvergesOnContainedConcept(t *testing.T) {
 func TestAutomaticRecallFallsBackOnFlatGradient(t *testing.T) {
 	st := newTestStore(t)
 
-	addTestMemory(t, st, "feedback_tuplia_auth_no_passwords")
-	addTestMemory(t, st, "project_tuplia_auth_policy")
-	addTestMemory(t, st, "tuplia_cloud_passwordless")
-	addTestMemory(t, st, "tuplia_cloud_pricing")
+	addTestMemory(t, st, "feedback_acme_auth_no_passwords")
+	addTestMemory(t, st, "project_acme_auth_policy")
+	addTestMemory(t, st, "acme_cloud_passwordless")
+	addTestMemory(t, st, "acme_cloud_pricing")
 	if err := st.RefreshHarvestedConcepts(); err != nil {
 		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	recall, err := st.RecallAutomatic("Tuplia", nil, 5, MemoryFilter{})
+	recall, err := st.RecallAutomatic("Acme", nil, 5, MemoryFilter{})
 	if err != nil {
 		t.Fatalf("RecallAutomatic failed: %v", err)
 	}
@@ -488,15 +488,15 @@ func TestAutomaticRecallFallsBackOnFlatGradient(t *testing.T) {
 func TestAutomaticRecallUsesFuzzyConceptEmbedding(t *testing.T) {
 	st := newTestStore(t)
 
-	addTestMemory(t, st, "feedback_tuplia_auth_no_passwords")
-	addTestMemory(t, st, "project_tuplia_auth_policy")
-	addTestMemory(t, st, "tuplia_cloud_passwordless")
-	addTestMemory(t, st, "tuplia_cloud_pricing")
+	addTestMemory(t, st, "feedback_acme_auth_no_passwords")
+	addTestMemory(t, st, "project_acme_auth_policy")
+	addTestMemory(t, st, "acme_cloud_passwordless")
+	addTestMemory(t, st, "acme_cloud_pricing")
 	if err := st.RefreshHarvestedConcepts(); err != nil {
 		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	concepts, err := st.ListNodes(NodeFilter{Kind: NodeKindConcept, Query: "Tuplia"}, 20)
+	concepts, err := st.ListNodes(NodeFilter{Kind: NodeKindConcept, Query: "Acme"}, 20)
 	if err != nil {
 		t.Fatalf("ListNodes failed: %v", err)
 	}
@@ -504,13 +504,13 @@ func TestAutomaticRecallUsesFuzzyConceptEmbedding(t *testing.T) {
 	for _, concept := range concepts {
 		conceptIDs[concept.Label] = concept.ID
 	}
-	if conceptIDs["Tuplia Auth"] == "" || conceptIDs["Tuplia Cloud"] == "" {
+	if conceptIDs["Acme Auth"] == "" || conceptIDs["Acme Cloud"] == "" {
 		t.Fatalf("expected auth and cloud concepts, got %v", conceptIDs)
 	}
 
 	err = st.ReplaceNodeEmbeddings([]NodeEmbedding{
-		{ID: conceptIDs["Tuplia Auth"], Embedding: []float32{0.1, 0.2, 0.3}},
-		{ID: conceptIDs["Tuplia Cloud"], Embedding: []float32{0.9, 0.8, 0.7}},
+		{ID: conceptIDs["Acme Auth"], Embedding: []float32{0.1, 0.2, 0.3}},
+		{ID: conceptIDs["Acme Cloud"], Embedding: []float32{0.9, 0.8, 0.7}},
 	})
 	if err != nil {
 		t.Fatalf("ReplaceNodeEmbeddings failed: %v", err)
@@ -526,8 +526,8 @@ func TestAutomaticRecallUsesFuzzyConceptEmbedding(t *testing.T) {
 	if recall.MatchedBy != "fuzzy_vector" {
 		t.Fatalf("expected fuzzy_vector match, got %q", recall.MatchedBy)
 	}
-	if recall.Vantage.Label != "Tuplia Auth" {
-		t.Fatalf("expected Tuplia Auth vantage, got %q", recall.Vantage.Label)
+	if recall.Vantage.Label != "Acme Auth" {
+		t.Fatalf("expected Acme Auth vantage, got %q", recall.Vantage.Label)
 	}
 	if !recall.Converged {
 		t.Fatalf("expected fuzzy recall to converge, stop_reason=%s", recall.StopReason)
@@ -537,22 +537,22 @@ func TestAutomaticRecallUsesFuzzyConceptEmbedding(t *testing.T) {
 func TestMergeConceptNodesDeduplicatesEdgeCollisions(t *testing.T) {
 	st := newTestStore(t)
 
-	m := addTestMemory(t, st, "tuplia_cloud_platform_auth")
+	m := addTestMemory(t, st, "acme_cloud_platform_auth")
 	tx, err := st.db.Begin()
 	if err != nil {
 		t.Fatalf("begin failed: %v", err)
 	}
-	targetID, err := ensureConceptNodeTx(tx, "Tuplia Cloud")
+	targetID, err := ensureConceptNodeTx(tx, "Acme Cloud")
 	if err != nil {
 		tx.Rollback()
 		t.Fatalf("ensure target failed: %v", err)
 	}
-	sourceID, err := ensureConceptNodeTx(tx, "Tuplia Cloud Platform")
+	sourceID, err := ensureConceptNodeTx(tx, "Acme Cloud Platform")
 	if err != nil {
 		tx.Rollback()
 		t.Fatalf("ensure source failed: %v", err)
 	}
-	if err := ensureAliasTx(tx, sourceID, "tuplia-cloud-platform", "test"); err != nil {
+	if err := ensureAliasTx(tx, sourceID, "acme-cloud-platform", "test"); err != nil {
 		tx.Rollback()
 		t.Fatalf("ensure alias failed: %v", err)
 	}
@@ -568,12 +568,12 @@ func TestMergeConceptNodesDeduplicatesEdgeCollisions(t *testing.T) {
 		t.Fatalf("commit failed: %v", err)
 	}
 
-	result, err := st.MergeConceptNodes("Tuplia Cloud Platform", "Tuplia Cloud")
+	result, err := st.MergeConceptNodes("Acme Cloud Platform", "Acme Cloud")
 	if err != nil {
 		t.Fatalf("MergeConceptNodes failed: %v", err)
 	}
-	if result.Target.Label != "Tuplia Cloud" {
-		t.Fatalf("expected target Tuplia Cloud, got %q", result.Target.Label)
+	if result.Target.Label != "Acme Cloud" {
+		t.Fatalf("expected target Acme Cloud, got %q", result.Target.Label)
 	}
 	if source, err := st.GetNodeDetails(sourceID, "", ""); err != nil {
 		t.Fatalf("GetNodeDetails source failed: %v", err)
@@ -593,13 +593,13 @@ func TestMergeConceptNodesDeduplicatesEdgeCollisions(t *testing.T) {
 		t.Fatalf("expected one deduped target edge, got %d", edgeCount)
 	}
 
-	details, err := st.GetNodeDetails("", NodeKindConcept, "Tuplia Cloud")
+	details, err := st.GetNodeDetails("", NodeKindConcept, "Acme Cloud")
 	if err != nil {
 		t.Fatalf("GetNodeDetails failed: %v", err)
 	}
 	foundAlias := false
 	for _, alias := range details.Aliases {
-		if alias.NormalizedAlias == "tuplia cloud platform" {
+		if alias.NormalizedAlias == "acme cloud platform" {
 			foundAlias = true
 			break
 		}
@@ -636,7 +636,7 @@ func TestLinkMemoryToConceptCreatesManualAboutEdge(t *testing.T) {
 func TestApplyMemoryHintsSurviveHarvest(t *testing.T) {
 	st := newTestStore(t)
 
-	m := addTestMemory(t, st, "tuplia_cloud_passwordless_auth")
+	m := addTestMemory(t, st, "acme_cloud_passwordless_auth")
 	_, err := st.ApplyMemoryHints(m.ID, MemoryHints{
 		About:   []string{"Auth"},
 		Aliases: []string{"passwordless auth note"},

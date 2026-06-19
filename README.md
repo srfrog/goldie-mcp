@@ -7,14 +7,14 @@ A multi-agent memory MCP server written in Go that runs locally on your machine.
 - **Typed memories**: Each memory has a type (`user`, `feedback`, `project`, `reference`, `opinion`, `idea`, `todo`, `reminder`), a unique name, optional description, body, agent, and source
 - **Shared pool**: Scope is a SQLite file — point any number of agents at the same DB and they share memory
 - **Semantic recall**: Filtered KNN over chunk embeddings; recall returns the parent memory plus the matched excerpt
-- **Graph recall**: Memories get graph nodes; Goldie harvests stable concepts and facets from names and sources so broad recalls can return grouped context like `Tuplia` -> `Tuplia Cloud`
+- **Graph recall**: Memories get graph nodes; Goldie harvests stable concepts and facets from names and sources so broad recalls can return grouped context like `Acme` -> `Acme Cloud`
 - **Multiple embedding backends**: MiniLM (local via ONNX Runtime) or Ollama (any embedding model)
 - **File ingestion**: `index_file` / `index_directory` import files as `reference` memories named by absolute path (checksum-gated upsert)
 - **Async job queue**: Long-running indexing operations and graph harvest/backfill jobs run in the background with progress tracking
 
 ## Graph Recall
 
-Goldie v4 adds a graph layer beside semantic search. Each memory has a `memory` node, and Goldie harvests `concept` nodes from descriptive memory names and file/source paths. Shared prefixes become facets through `part_of` edges, so memories like `tuplia_cloud_passwordless_auth` and `tuplia_cloud_pricing` can group under `Tuplia Cloud`, which itself belongs to `Tuplia`.
+Goldie v4 adds a graph layer beside semantic search. Each memory has a `memory` node, and Goldie harvests `concept` nodes from descriptive memory names and file/source paths. Shared prefixes become facets through `part_of` edges, so memories like `acme_cloud_passwordless_auth` and `acme_cloud_pricing` can group under `Acme Cloud`, which itself belongs to `Acme`.
 
 `recall` remains backward-compatible: it still returns the flat `results` list. When a query resolves to a concept, the response also includes `concept_recall` with the matched concept, facet groups, and directly attached memories. Clients that ignore `concept_recall` continue to work.
 
@@ -460,11 +460,11 @@ What memories do I have about the API design?
 ```
 
 ```
-Explain recall for "how does Tuplia handle auth"
+Explain recall for "how does Acme handle auth"
 ```
 
 ```
-List concept nodes matching Tuplia
+List concept nodes matching Acme
 ```
 
 ### update_memory

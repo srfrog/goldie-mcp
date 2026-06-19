@@ -83,6 +83,34 @@ func TestAddMemoryCreatesMemoryNode(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeInspectionFindsMemoryName(t *testing.T) {
+	st := newTestStore(t)
+
+	m := addTestMemory(t, st, "goldie_v4_live_smoke_20260619_a7f9c2")
+
+	nodes, err := st.ListNodes(NodeFilter{Kind: NodeKindMemory, Query: "goldie_v4_live_smoke"}, 5)
+	if err != nil {
+		t.Fatalf("ListNodes failed: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 memory node, got %d", len(nodes))
+	}
+	if nodes[0].ID != m.NodeID {
+		t.Fatalf("expected memory node %q, got %q", m.NodeID, nodes[0].ID)
+	}
+
+	details, err := st.GetNodeDetails("", NodeKindMemory, m.Name)
+	if err != nil {
+		t.Fatalf("GetNodeDetails failed: %v", err)
+	}
+	if details == nil {
+		t.Fatal("expected memory node details")
+	}
+	if details.Node.ID != m.NodeID {
+		t.Fatalf("expected memory node %q, got %q", m.NodeID, details.Node.ID)
+	}
+}
+
 func TestAddMemoryEnqueuesGraphHarvestWithoutRunningIt(t *testing.T) {
 	st := newTestStore(t)
 
@@ -609,7 +637,7 @@ func TestApplyMemoryHintsSurviveHarvest(t *testing.T) {
 	st := newTestStore(t)
 
 	m := addTestMemory(t, st, "tuplia_cloud_passwordless_auth")
-	err := st.ApplyMemoryHints(m.ID, MemoryHints{
+	_, err := st.ApplyMemoryHints(m.ID, MemoryHints{
 		About:   []string{"Auth"},
 		Aliases: []string{"passwordless auth note"},
 		Links: []GraphLinkHint{{

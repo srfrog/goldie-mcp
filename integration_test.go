@@ -826,6 +826,15 @@ func TestMCP_GraphCleanupTools(t *testing.T) {
 	if link["success"] != true {
 		t.Fatalf("link_memory target failed: %v", link)
 	}
+	memoryNode := ts.CallTool(t, "get_node", map[string]any{
+		"kind":  "memory",
+		"label": "manual_auth_note",
+	})
+	if node, ok := memoryNode["node"].(map[string]any); !ok {
+		t.Fatalf("expected memory node details, got %v", memoryNode)
+	} else if detailsNode := node["node"].(map[string]any); detailsNode["label"] != "manual_auth_note" {
+		t.Fatalf("expected manual_auth_note memory node, got %v", node)
+	}
 	link = ts.CallTool(t, "link_memory", map[string]any{
 		"memory":  "manual_auth_duplicate_note",
 		"concept": "Manual Auth Duplicate",

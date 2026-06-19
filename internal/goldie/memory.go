@@ -146,10 +146,11 @@ func (g *Goldie) applyHints(memoryID string, hints store.MemoryHints) error {
 	if len(hints.About) == 0 && len(hints.Aliases) == 0 && len(hints.Links) == 0 {
 		return nil
 	}
-	if err := g.store.ApplyMemoryHints(memoryID, hints); err != nil {
+	refreshIDs, err := g.store.ApplyMemoryHints(memoryID, hints)
+	if err != nil {
 		return err
 	}
-	return g.RefreshNodeEmbeddings()
+	return g.RefreshNodeEmbeddingsByID(refreshIDs)
 }
 
 // RecallMemory runs semantic search over memories, optionally filtered.
@@ -211,6 +212,33 @@ func (g *Goldie) RefreshNodeEmbeddings() error {
 	return g.store.ReplaceNodeEmbeddings(embeddings)
 }
 
+// RefreshNodeEmbeddingsByID rebuilds concept node embeddings for selected nodes.
+func (g *Goldie) RefreshNodeEmbeddingsByID(ids []string) error {
+	items, err := g.store.ListConceptNodeEmbeddingTextsByID(ids)
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	texts := make([]string, 0, len(items))
+	for _, item := range items {
+		texts = append(texts, item.Text)
+	}
+	vectors, err := g.embedder.EmbedBatch(texts)
+	if err != nil {
+		return fmt.Errorf("embedding concept nodes: %w", err)
+	}
+	embeddings := make([]store.NodeEmbedding, 0, len(items))
+	for i, item := range items {
+		embeddings = append(embeddings, store.NodeEmbedding{
+			ID:        item.ID,
+			Embedding: vectors[i],
+		})
+	}
+	return g.store.UpsertNodeEmbeddings(embeddings)
+}
+
 // ForgetMemory deletes memories. If query is non-empty, semantic search
 // (constrained by filter) selects up to `limit` candidates and they are
 // deleted. Otherwise every memory matching the filter is deleted. Refuses to
@@ -267,7 +295,10 @@ func (g *Goldie) MergeNodes(sourceRef, targetRef string) (*store.MergeNodesResul
 	if err != nil {
 		return nil, err
 	}
-	if err := g.RefreshNodeEmbeddings(); err != nil {
+	if err := g.store.DeleteNodeEmbeddings(result.DeleteEmbeddingIDs); err != nil {
+		return nil, err
+	}
+	if err := g.RefreshNodeEmbeddingsByID(result.RefreshConceptIDs); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -286,7 +317,7 @@ func (g *Goldie) LinkMemory(memoryRef, conceptRef, relation string) (*store.Link
 	if err != nil {
 		return nil, err
 	}
-	if err := g.RefreshNodeEmbeddings(); err != nil {
+	if err := g.RefreshNodeEmbeddingsByID(result.RefreshConceptIDs); err != nil {
 		return nil, err
 	}
 	return result, nil

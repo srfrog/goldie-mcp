@@ -290,7 +290,7 @@ Inspect graph nodes for testing graph recall. Returns node labels plus alias and
 
 **Parameters:**
 - `kind` (optional): node kind such as `concept` or `memory`
-- `query` (optional): normalized label or alias substring
+- `query` (optional): normalized label, alias, or memory-name substring
 - `limit` (optional): max nodes (default 50, max 200)
 
 ### explain_recall
@@ -308,7 +308,7 @@ Inspect one graph node with aliases plus incoming and outgoing edges.
 
 **Parameters:**
 - `id` (optional): graph node id
-- `label` (optional): exact node label when id is omitted
+- `label` (optional): exact node label when id is omitted; for `kind=memory`, memory name also works
 - `kind` (optional): node kind when resolving by label (default `concept`)
 
 ### merge_nodes

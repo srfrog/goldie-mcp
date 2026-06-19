@@ -110,17 +110,20 @@ type NodeDetails struct {
 }
 
 type MergeNodesResult struct {
-	Target       Node
-	Source       Node
-	AliasesMoved int
-	EdgesMoved   int
+	Target             Node
+	Source             Node
+	AliasesMoved       int
+	EdgesMoved         int
+	RefreshConceptIDs  []string
+	DeleteEmbeddingIDs []string
 }
 
 type LinkMemoryResult struct {
-	Memory   Memory
-	Concept  Node
-	Relation string
-	Origin   string
+	Memory            Memory
+	Concept           Node
+	Relation          string
+	Origin            string
+	RefreshConceptIDs []string
 }
 
 type GraphLinkHint struct {
@@ -730,9 +733,12 @@ func (s *Store) ListNodes(filter NodeFilter, limit int) ([]Node, error) {
 		clauses = append(clauses, `(n.normalized_label LIKE ? OR EXISTS (
 			SELECT 1 FROM node_aliases a
 			WHERE a.node_id = n.id AND a.normalized_alias LIKE ?
+		) OR EXISTS (
+			SELECT 1 FROM memories m
+			WHERE m.node_id = n.id AND LOWER(m.name) LIKE ?
 		))`)
 		q := "%" + NormalizeLabel(filter.Query) + "%"
-		args = append(args, q, q)
+		args = append(args, q, q, q)
 	}
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
@@ -792,6 +798,43 @@ func (s *Store) ListConceptNodeEmbeddingTexts() ([]NodeEmbeddingText, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) ListConceptNodeEmbeddingTextsByID(ids []string) ([]NodeEmbeddingText, error) {
+	ids = uniqueStrings(ids)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, NodeKindConcept)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := s.db.Query(fmt.Sprintf(`
+		SELECT
+			n.id,
+			n.label || COALESCE(char(10) || GROUP_CONCAT(a.alias, char(10)), '')
+		FROM nodes n
+		LEFT JOIN node_aliases a ON a.node_id = n.id
+		WHERE n.kind = ? AND n.id IN (%s)
+		GROUP BY n.id, n.label
+		ORDER BY n.label
+	`, placeholders), args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing selected concept node texts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []NodeEmbeddingText
+	for rows.Next() {
+		var item NodeEmbeddingText
+		if err := rows.Scan(&item.ID, &item.Text); err != nil {
+			return nil, fmt.Errorf("scanning selected concept node text: %w", err)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ReplaceNodeEmbeddings(embeddings []NodeEmbedding) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -809,6 +852,49 @@ func (s *Store) ReplaceNodeEmbeddings(embeddings []NodeEmbedding) error {
 		}
 		if _, err := tx.Exec("INSERT INTO nodes_vec (id, embedding) VALUES (?, ?)", item.ID, string(embJSON)); err != nil {
 			return fmt.Errorf("inserting node vector: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) UpsertNodeEmbeddings(embeddings []NodeEmbedding) error {
+	if len(embeddings) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning node embedding upsert transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, item := range embeddings {
+		embJSON, err := json.Marshal(item.Embedding)
+		if err != nil {
+			return fmt.Errorf("marshaling node embedding: %w", err)
+		}
+		if _, err := tx.Exec("DELETE FROM nodes_vec WHERE id = ?", item.ID); err != nil {
+			return fmt.Errorf("deleting old node vector: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO nodes_vec (id, embedding) VALUES (?, ?)", item.ID, string(embJSON)); err != nil {
+			return fmt.Errorf("inserting node vector: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DeleteNodeEmbeddings(ids []string) error {
+	ids = uniqueStrings(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning node embedding delete transaction: %w", err)
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if _, err := tx.Exec("DELETE FROM nodes_vec WHERE id = ?", id); err != nil {
+			return fmt.Errorf("deleting node vector: %w", err)
 		}
 	}
 	return tx.Commit()
@@ -945,10 +1031,12 @@ func (s *Store) MergeConceptNodes(sourceRef, targetRef string) (*MergeNodesResul
 	}
 
 	return &MergeNodesResult{
-		Target:       *target,
-		Source:       *source,
-		AliasesMoved: aliasesMoved,
-		EdgesMoved:   edgesMoved,
+		Target:             *target,
+		Source:             *source,
+		AliasesMoved:       aliasesMoved,
+		EdgesMoved:         edgesMoved,
+		RefreshConceptIDs:  []string{target.ID},
+		DeleteEmbeddingIDs: []string{source.ID},
 	}, nil
 }
 
@@ -1004,52 +1092,55 @@ func (s *Store) LinkMemoryToConcept(memoryID, conceptRef, relation, origin strin
 	}
 
 	return &LinkMemoryResult{
-		Memory:   *memory,
-		Concept:  *concept,
-		Relation: relation,
-		Origin:   origin,
+		Memory:            *memory,
+		Concept:           *concept,
+		Relation:          relation,
+		Origin:            origin,
+		RefreshConceptIDs: []string{concept.ID},
 	}, nil
 }
 
-func (s *Store) ApplyMemoryHints(memoryID string, hints MemoryHints) error {
+func (s *Store) ApplyMemoryHints(memoryID string, hints MemoryHints) ([]string, error) {
 	if len(hints.About) == 0 && len(hints.Aliases) == 0 && len(hints.Links) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("beginning hint transaction: %w", err)
+		return nil, fmt.Errorf("beginning hint transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	memory, err := getMemoryTx(tx, memoryID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if memory == nil {
-		return fmt.Errorf("memory not found: %s", memoryID)
+		return nil, fmt.Errorf("memory not found: %s", memoryID)
 	}
 	if memory.NodeID == "" {
 		nodeID, err := ensureMemoryNodeTx(tx, memory.ID, memory.Name)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		memory.NodeID = nodeID
 	}
 
 	for _, alias := range hints.Aliases {
 		if err := ensureAliasTx(tx, memory.NodeID, alias, "hint"); err != nil {
-			return err
+			return nil, err
 		}
 	}
+	var refreshIDs []string
 	for _, conceptRef := range hints.About {
 		conceptID, err := ensureOrResolveConceptNodeTx(tx, conceptRef)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := ensureEdgeWithOriginTx(tx, memory.NodeID, RelationAbout, conceptID, memory.ID, "hint"); err != nil {
-			return err
+			return nil, err
 		}
+		refreshIDs = append(refreshIDs, conceptID)
 	}
 	for _, link := range hints.Links {
 		relation := strings.TrimSpace(link.Relation)
@@ -1057,17 +1148,21 @@ func (s *Store) ApplyMemoryHints(memoryID string, hints MemoryHints) error {
 			relation = RelationMentions
 		}
 		if !validOpenRelation(relation) {
-			return fmt.Errorf("invalid graph relation %q", relation)
+			return nil, fmt.Errorf("invalid graph relation %q", relation)
 		}
 		targetID, err := ensureOrResolveConceptNodeTx(tx, link.Target)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err := ensureEdgeWithOriginTx(tx, memory.NodeID, relation, targetID, memory.ID, "hint"); err != nil {
-			return err
+			return nil, err
 		}
+		refreshIDs = append(refreshIDs, targetID)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return uniqueStrings(refreshIDs), nil
 }
 
 func (s *Store) resolveNode(id, kind, label string) (*Node, error) {
@@ -1092,11 +1187,20 @@ func (s *Store) resolveNode(id, kind, label string) (*Node, error) {
 	if kind == "" {
 		kind = NodeKindConcept
 	}
-	return s.queryNode(`
+	node, err := s.queryNode(`
 		SELECT id, kind, label, normalized_label
 		FROM nodes
 		WHERE kind = ? AND normalized_label = ?
 	`, kind, NormalizeLabel(label))
+	if err != nil || node != nil || kind != NodeKindMemory {
+		return node, err
+	}
+	return s.queryNode(`
+		SELECT n.id, n.kind, n.label, n.normalized_label
+		FROM memories m
+		JOIN nodes n ON n.id = m.node_id
+		WHERE n.kind = ? AND m.name = ?
+	`, NodeKindMemory, label)
 }
 
 func (s *Store) nodeAliases(nodeID string) ([]NodeAlias, error) {
@@ -1612,6 +1716,22 @@ func tokenOverlapScore(queryTokens, targetTokens []string) float64 {
 		}
 	}
 	return score
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func tokenCount(s string) int {

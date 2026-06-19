@@ -332,6 +332,11 @@ func (q *Queue) processGraphBackfill(job *store.Job) {
 		q.store.UpdateJobError(job.ID, fmt.Sprintf("concept harvest failed: %v", err))
 		return
 	}
+	if err := q.goldie.RefreshNodeEmbeddings(); err != nil {
+		q.logger.Printf("Job %s: node embedding refresh failed: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("node embedding refresh failed: %v", err))
+		return
+	}
 	resultJSON, err := json.Marshal(map[string]any{
 		"backfilled": backfilled,
 		"remaining":  remaining,
@@ -354,6 +359,11 @@ func (q *Queue) processGraphHarvest(job *store.Job) {
 	if err := q.store.RefreshHarvestedConcepts(); err != nil {
 		q.logger.Printf("Job %s: concept harvest failed: %v", job.ID, err)
 		q.store.UpdateJobError(job.ID, fmt.Sprintf("concept harvest failed: %v", err))
+		return
+	}
+	if err := q.goldie.RefreshNodeEmbeddings(); err != nil {
+		q.logger.Printf("Job %s: node embedding refresh failed: %v", job.ID, err)
+		q.store.UpdateJobError(job.ID, fmt.Sprintf("node embedding refresh failed: %v", err))
 		return
 	}
 	resultJSON, err := json.Marshal(map[string]any{

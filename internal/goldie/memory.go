@@ -159,7 +159,38 @@ func (g *Goldie) RecallAutomatic(query string, limit int, filter store.MemoryFil
 	if query == "" {
 		return nil, fmt.Errorf("empty query")
 	}
-	return g.store.RecallAutomatic(query, limit, filter)
+	emb, err := g.embedder.Embed(query)
+	if err != nil {
+		return nil, fmt.Errorf("generating query embedding: %w", err)
+	}
+	return g.store.RecallAutomatic(query, emb, limit, filter)
+}
+
+// RefreshNodeEmbeddings rebuilds concept node embeddings for fuzzy graph recall.
+func (g *Goldie) RefreshNodeEmbeddings() error {
+	items, err := g.store.ListConceptNodeEmbeddingTexts()
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return g.store.ReplaceNodeEmbeddings(nil)
+	}
+	texts := make([]string, 0, len(items))
+	for _, item := range items {
+		texts = append(texts, item.Text)
+	}
+	vectors, err := g.embedder.EmbedBatch(texts)
+	if err != nil {
+		return fmt.Errorf("embedding concept nodes: %w", err)
+	}
+	embeddings := make([]store.NodeEmbedding, 0, len(items))
+	for i, item := range items {
+		embeddings = append(embeddings, store.NodeEmbedding{
+			ID:        item.ID,
+			Embedding: vectors[i],
+		})
+	}
+	return g.store.ReplaceNodeEmbeddings(embeddings)
 }
 
 // ForgetMemory deletes memories. If query is non-empty, semantic search

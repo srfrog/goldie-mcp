@@ -623,8 +623,8 @@ This is the launchable v4 boundary.
 - Return a compact path, convergence flag, branch scores, and stop reason as
   additive `automatic_recall` metadata.
 - Fall back to grouped/flat recall when the gradient is ambiguous.
-- Add `nodes_vec` for fuzzy concept resolution in a later v4.1 dot release.
-- Promote `explain_recall` to a first-class trace tool in a later v4.1 dot release.
+- Add `nodes_vec` for fuzzy concept resolution.
+- Promote `explain_recall` to a first-class trace tool.
 - Auto-recall quality is bounded by concept hygiene until v4.2 cleanup tools land.
   Exact duplicates are prevented by `UNIQUE(kind, normalized_label)`, but
   near-duplicates like `Tuplia Cloud` and `Tuplia Cloud Platform` can still flatten or

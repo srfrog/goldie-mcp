@@ -223,6 +223,18 @@ func registerTools(s *server.MCPServer) {
 	)
 
 	s.AddTool(
+		mcp.NewTool("explain_recall",
+			mcp.WithDescription("Trace hybrid recall for a query. Shows vector matches, grouped concept recall, automatic graph descent path, candidate scores, and stop reason without returning full memory bodies."),
+			mcp.WithString("query", mcp.Required(), mcp.Description("The topic or question to explain recall for")),
+			mcp.WithNumber("limit", mcp.Description("Maximum results to include per section (default: 5, max: 20)")),
+			mcp.WithString("type", mcp.Description("Filter by memory type")),
+			mcp.WithString("agent", mcp.Description("Filter by agent")),
+			mcp.WithString("source", mcp.Description("Filter by source")),
+		),
+		handleExplainRecall,
+	)
+
+	s.AddTool(
 		mcp.NewTool("get_memory",
 			mcp.WithDescription("Fetch a single memory's full record (including body) by id or name. Use this after recall to pull the full body for results that are worth reading in depth — recall itself returns only excerpts by default."),
 			mcp.WithString("id_or_name", mcp.Required(), mcp.Description("The memory's id or name")),
@@ -540,6 +552,50 @@ func handleRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTool
 		payload["concept_recall"] = conceptRecallSummary(conceptRecall)
 	}
 	if automaticRecall != nil {
+		payload["automatic_recall"] = automaticRecallSummary(automaticRecall)
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(payload)), nil
+}
+
+func handleExplainRecall(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	query := argString(args, "query")
+	if query == "" {
+		return mcp.NewToolResultError("query is required"), nil
+	}
+	limit := max(min(argInt(args, "limit", 5), 20), 1)
+	filter := store.MemoryFilter{
+		Type:   argString(args, "type"),
+		Agent:  argString(args, "agent"),
+		Source: argString(args, "source"),
+	}
+
+	results, err := goldieInstance.RecallMemory(query, limit, filter)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("vector recall failed: %v", err)), nil
+	}
+	vector := make([]map[string]any, 0, len(results))
+	for _, r := range results {
+		entry := memorySummary(r.Memory)
+		entry["excerpt"] = r.Excerpt
+		entry["score"] = r.Score
+		entry["distance"] = r.Distance
+		vector = append(vector, entry)
+	}
+
+	payload := map[string]any{
+		"query":          query,
+		"vector_results": vector,
+		"message":        formatMessage("Explained recall for %q", query),
+	}
+	if conceptRecall, err := goldieInstance.RecallConcept(query, limit, filter); err != nil {
+		payload["concept_error"] = err.Error()
+	} else if conceptRecall != nil {
+		payload["concept_recall"] = conceptRecallSummary(conceptRecall)
+	}
+	if automaticRecall, err := goldieInstance.RecallAutomatic(query, limit, filter); err != nil {
+		payload["automatic_error"] = err.Error()
+	} else if automaticRecall != nil {
 		payload["automatic_recall"] = automaticRecallSummary(automaticRecall)
 	}
 	return mcp.NewToolResultText(safeJSONMarshal(payload)), nil

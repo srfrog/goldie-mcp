@@ -407,7 +407,7 @@ func TestAutomaticRecallConvergesOnContainedConcept(t *testing.T) {
 		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	recall, err := st.RecallAutomatic("how does Tuplia handle auth", 5, MemoryFilter{})
+	recall, err := st.RecallAutomatic("how does Tuplia handle auth", nil, 5, MemoryFilter{})
 	if err != nil {
 		t.Fatalf("RecallAutomatic failed: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestAutomaticRecallFallsBackOnFlatGradient(t *testing.T) {
 		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
 	}
 
-	recall, err := st.RecallAutomatic("Tuplia", 5, MemoryFilter{})
+	recall, err := st.RecallAutomatic("Tuplia", nil, 5, MemoryFilter{})
 	if err != nil {
 		t.Fatalf("RecallAutomatic failed: %v", err)
 	}
@@ -454,5 +454,54 @@ func TestAutomaticRecallFallsBackOnFlatGradient(t *testing.T) {
 	}
 	if len(recall.Candidates) < 2 {
 		t.Fatalf("expected competing branch candidates, got %d", len(recall.Candidates))
+	}
+}
+
+func TestAutomaticRecallUsesFuzzyConceptEmbedding(t *testing.T) {
+	st := newTestStore(t)
+
+	addTestMemory(t, st, "feedback_tuplia_auth_no_passwords")
+	addTestMemory(t, st, "project_tuplia_auth_policy")
+	addTestMemory(t, st, "tuplia_cloud_passwordless")
+	addTestMemory(t, st, "tuplia_cloud_pricing")
+	if err := st.RefreshHarvestedConcepts(); err != nil {
+		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
+	}
+
+	concepts, err := st.ListNodes(NodeFilter{Kind: NodeKindConcept, Query: "Tuplia"}, 20)
+	if err != nil {
+		t.Fatalf("ListNodes failed: %v", err)
+	}
+	conceptIDs := map[string]string{}
+	for _, concept := range concepts {
+		conceptIDs[concept.Label] = concept.ID
+	}
+	if conceptIDs["Tuplia Auth"] == "" || conceptIDs["Tuplia Cloud"] == "" {
+		t.Fatalf("expected auth and cloud concepts, got %v", conceptIDs)
+	}
+
+	err = st.ReplaceNodeEmbeddings([]NodeEmbedding{
+		{ID: conceptIDs["Tuplia Auth"], Embedding: []float32{0.1, 0.2, 0.3}},
+		{ID: conceptIDs["Tuplia Cloud"], Embedding: []float32{0.9, 0.8, 0.7}},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceNodeEmbeddings failed: %v", err)
+	}
+
+	recall, err := st.RecallAutomatic("authentication", []float32{0.1, 0.2, 0.3}, 5, MemoryFilter{})
+	if err != nil {
+		t.Fatalf("RecallAutomatic failed: %v", err)
+	}
+	if recall == nil {
+		t.Fatal("expected fuzzy automatic recall")
+	}
+	if recall.MatchedBy != "fuzzy_vector" {
+		t.Fatalf("expected fuzzy_vector match, got %q", recall.MatchedBy)
+	}
+	if recall.Vantage.Label != "Tuplia Auth" {
+		t.Fatalf("expected Tuplia Auth vantage, got %q", recall.Vantage.Label)
+	}
+	if !recall.Converged {
+		t.Fatalf("expected fuzzy recall to converge, stop_reason=%s", recall.StopReason)
 	}
 }

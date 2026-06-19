@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -67,6 +68,22 @@ type AutomaticRecallCandidate struct {
 	Concept     Node
 	Score       float64
 	MemoryCount int
+}
+
+type NodeEmbeddingText struct {
+	ID   string
+	Text string
+}
+
+type NodeEmbedding struct {
+	ID        string
+	Embedding []float32
+}
+
+type NodeSearchResult struct {
+	Node     Node
+	Score    float32
+	Distance float32
 }
 
 func (s *Store) initGraphSchema() error {
@@ -147,6 +164,15 @@ func (s *Store) initGraphSchema() error {
 	}
 	if err := s.ensureEdgeOriginColumn(); err != nil {
 		return err
+	}
+	query := fmt.Sprintf(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS nodes_vec USING vec0(
+			id TEXT PRIMARY KEY,
+			embedding FLOAT[%d]
+		)
+	`, s.dimensions)
+	if _, err := s.db.Exec(query); err != nil {
+		return fmt.Errorf("creating nodes_vec table: %w", err)
 	}
 	return nil
 }
@@ -449,6 +475,106 @@ func (s *Store) ListNodes(filter NodeFilter, limit int) ([]Node, error) {
 		out = append(out, n)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ListConceptNodeEmbeddingTexts() ([]NodeEmbeddingText, error) {
+	rows, err := s.db.Query(`
+		SELECT
+			n.id,
+			n.label || COALESCE(char(10) || GROUP_CONCAT(a.alias, char(10)), '')
+		FROM nodes n
+		LEFT JOIN node_aliases a ON a.node_id = n.id
+		WHERE n.kind = ?
+		GROUP BY n.id, n.label
+		ORDER BY n.label
+	`, NodeKindConcept)
+	if err != nil {
+		return nil, fmt.Errorf("listing concept node texts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []NodeEmbeddingText
+	for rows.Next() {
+		var item NodeEmbeddingText
+		if err := rows.Scan(&item.ID, &item.Text); err != nil {
+			return nil, fmt.Errorf("scanning concept node text: %w", err)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ReplaceNodeEmbeddings(embeddings []NodeEmbedding) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning node embedding transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM nodes_vec"); err != nil {
+		return fmt.Errorf("clearing node vectors: %w", err)
+	}
+	for _, item := range embeddings {
+		embJSON, err := json.Marshal(item.Embedding)
+		if err != nil {
+			return fmt.Errorf("marshaling node embedding: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO nodes_vec (id, embedding) VALUES (?, ?)", item.ID, string(embJSON)); err != nil {
+			return fmt.Errorf("inserting node vector: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) SearchConceptNodes(embedding []float32, limit int) ([]NodeSearchResult, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	embJSON, err := json.Marshal(embedding)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling node query embedding: %w", err)
+	}
+	rows, err := s.db.Query(`
+		SELECT
+			v.distance,
+			n.id, n.kind, n.label, n.normalized_label
+		FROM nodes_vec v
+		JOIN nodes n ON n.id = v.id
+		WHERE v.embedding MATCH ? AND k = ? AND n.kind = ?
+		ORDER BY v.distance
+	`, string(embJSON), limit, NodeKindConcept)
+	if err != nil {
+		return nil, fmt.Errorf("searching concept nodes: %w", err)
+	}
+	defer rows.Close()
+
+	var out []NodeSearchResult
+	for rows.Next() {
+		var result NodeSearchResult
+		if err := rows.Scan(
+			&result.Distance,
+			&result.Node.ID,
+			&result.Node.Kind,
+			&result.Node.Label,
+			&result.Node.NormalizedLabel,
+		); err != nil {
+			return nil, fmt.Errorf("scanning concept node search row: %w", err)
+		}
+		result.Score = 1 - result.Distance
+		out = append(out, result)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CountConceptNodesMissingEmbeddings() (int, error) {
+	var n int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM nodes n
+		LEFT JOIN nodes_vec v ON v.id = n.id
+		WHERE n.kind = ? AND v.id IS NULL
+	`, NodeKindConcept).Scan(&n)
+	return n, err
 }
 
 func (s *Store) CountMemoriesMissingNodes() (int, error) {
@@ -929,6 +1055,31 @@ func (s *Store) EnqueueGraphBackfillIfNeeded() error {
 	return s.CreateJob(uuid.New().String(), JobTypeGraphBackfill, `{"batch_size":100}`)
 }
 
+func (s *Store) EnqueueGraphHarvestIfNeeded() error {
+	missing, err := s.CountConceptNodesMissingEmbeddings()
+	if err != nil {
+		return err
+	}
+	if missing == 0 {
+		return nil
+	}
+
+	var existing int
+	err = s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM jobs
+		WHERE type = ? AND status IN (?, ?)
+	`, JobTypeGraphHarvest, JobStatusQueued, JobStatusProcessing).Scan(&existing)
+	if err != nil {
+		return fmt.Errorf("checking graph harvest jobs: %w", err)
+	}
+	if existing > 0 {
+		return nil
+	}
+
+	return s.CreateJob(uuid.New().String(), JobTypeGraphHarvest, `{}`)
+}
+
 func enqueueGraphHarvestTx(tx *sql.Tx) error {
 	var existing int
 	err := tx.QueryRow(`
@@ -1005,7 +1156,7 @@ func (s *Store) RecallConcept(query string, limit int, filter MemoryFilter) (*Co
 // RecallAutomatic follows the strongest graph branch for a query and returns
 // inspectable metadata. It is fallback-safe: ambiguous or weak gradients return a
 // stop reason instead of pretending to have found a precise memory.
-func (s *Store) RecallAutomatic(query string, limit int, filter MemoryFilter) (*AutomaticRecall, error) {
+func (s *Store) RecallAutomatic(query string, queryEmbedding []float32, limit int, filter MemoryFilter) (*AutomaticRecall, error) {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -1014,7 +1165,7 @@ func (s *Store) RecallAutomatic(query string, limit int, filter MemoryFilter) (*
 		return nil, nil
 	}
 
-	vantage, matchedBy, err := s.resolveAutomaticVantage(query, queryTokens)
+	vantage, matchedBy, err := s.resolveAutomaticVantage(query, queryTokens, queryEmbedding)
 	if err != nil || vantage == nil {
 		return nil, err
 	}
@@ -1087,12 +1238,16 @@ func (s *Store) RecallAutomatic(query string, limit int, filter MemoryFilter) (*
 	return recall, nil
 }
 
-func (s *Store) resolveAutomaticVantage(query string, queryTokens []string) (*Node, string, error) {
+func (s *Store) resolveAutomaticVantage(query string, queryTokens []string, queryEmbedding []float32) (*Node, string, error) {
 	concept, err := s.findConcept(query)
 	if err != nil || concept != nil {
 		return concept, "exact", err
 	}
-	return s.findConceptContainedInQuery(queryTokens)
+	concept, matchedBy, err := s.findConceptContainedInQuery(queryTokens)
+	if err != nil || concept != nil {
+		return concept, matchedBy, err
+	}
+	return s.findFuzzyConcept(queryEmbedding)
 }
 
 func (s *Store) findConcept(query string) (*Node, error) {
@@ -1184,6 +1339,29 @@ func (s *Store) findConceptContainedInQuery(queryTokens []string) (*Node, string
 		return best, "contained_alias", nil
 	}
 	return nil, "", nil
+}
+
+func (s *Store) findFuzzyConcept(queryEmbedding []float32) (*Node, string, error) {
+	if len(queryEmbedding) == 0 {
+		return nil, "", nil
+	}
+	results, err := s.SearchConceptNodes(queryEmbedding, 2)
+	if err != nil || len(results) == 0 {
+		return nil, "", err
+	}
+
+	const (
+		maxDistance = 0.45
+		minMargin   = 0.05
+	)
+	best := results[0]
+	if best.Distance > maxDistance {
+		return nil, "", nil
+	}
+	if len(results) > 1 && results[1].Distance-best.Distance < minMargin {
+		return nil, "", nil
+	}
+	return &best.Node, "fuzzy_vector", nil
 }
 
 func (s *Store) queryNode(query string, args ...any) (*Node, error) {

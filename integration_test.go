@@ -135,6 +135,8 @@ func (ts *TestSetup) CallTool(t *testing.T, toolName string, args map[string]any
 		result, err = handleRemember(ctx, req)
 	case "recall":
 		result, err = handleRecall(ctx, req)
+	case "explain_recall":
+		result, err = handleExplainRecall(ctx, req)
 	case "get_memory":
 		result, err = handleGetMemory(ctx, req)
 	case "update_memory":
@@ -753,6 +755,14 @@ func TestMCP_RecallIncludesAutomaticRecall(t *testing.T) {
 
 	waitForGraphHarvest(t, ts)
 
+	missingEmbeddings, err := ts.Store.CountConceptNodesMissingEmbeddings()
+	if err != nil {
+		t.Fatalf("CountConceptNodesMissingEmbeddings failed: %v", err)
+	}
+	if missingEmbeddings != 0 {
+		t.Fatalf("expected graph harvest to refresh node embeddings, got %d missing", missingEmbeddings)
+	}
+
 	resp := ts.CallTool(t, "recall", map[string]any{
 		"query": "how does Tuplia handle auth",
 	})
@@ -770,6 +780,20 @@ func TestMCP_RecallIncludesAutomaticRecall(t *testing.T) {
 	memories := automaticRecall["memories"].([]any)
 	if len(memories) == 0 {
 		t.Fatalf("expected automatic recall memories, got %v", automaticRecall)
+	}
+
+	explain := ts.CallTool(t, "explain_recall", map[string]any{
+		"query": "how does Tuplia handle auth",
+	})
+	if _, ok := explain["vector_results"].([]any); !ok {
+		t.Fatalf("expected vector_results in explain_recall, got %v", explain)
+	}
+	explainedAutomatic, ok := explain["automatic_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected automatic_recall in explain_recall, got %v", explain)
+	}
+	if explainedAutomatic["converged"] != true {
+		t.Fatalf("expected explained automatic recall to converge, got %v", explainedAutomatic)
 	}
 }
 

@@ -289,6 +289,15 @@ Inspect graph nodes for testing graph recall. Returns node labels plus alias and
 - `query` (optional): normalized label or alias substring
 - `limit` (optional): max nodes (default 50, max 200)
 
+### explain_recall
+
+Trace hybrid recall for a query. Returns vector matches, grouped concept recall, automatic graph descent path, candidate scores, and stop reason.
+
+**Parameters:**
+- `query` (required): topic or question
+- `limit` (optional): max results per section (default 5, max 20)
+- `type`, `agent`, `source` (optional filters)
+
 ### index_file
 
 Import a file as a `reference` memory. The memory's `name` is the absolute path; re-indexing updates in place when the checksum changes.
@@ -539,11 +548,13 @@ goldie-mcp/
 
 ### Schema
 
-Three SQLite tables make up the memory index:
+Core SQLite tables make up the memory index:
 
 - `memories` — one row per memory: `id, name UNIQUE, type, description, body, agent, source, checksum, created_at, updated_at`
 - `memory_chunks` — body split into overlapping chunks for embedding granularity: `id, memory_id, chunk_index, content`
 - `memories_vec` — `vec0` virtual table over chunk embeddings, joined back to memories on recall
+- `nodes`, `node_aliases`, `edges` — graph layer for memory nodes, harvested concepts, aliases, and relationships
+- `nodes_vec` — `vec0` virtual table over concept node embeddings for fuzzy concept resolution
 
 Recall does KNN over chunks, then dedupes to distinct memories, returning the best-matching excerpt for each.
 

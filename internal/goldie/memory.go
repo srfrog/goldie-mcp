@@ -238,6 +238,42 @@ func (g *Goldie) ListNodes(filter store.NodeFilter, limit int) ([]store.Node, er
 	return g.store.ListNodes(filter, limit)
 }
 
+// GetNodeDetails returns aliases and edges for a graph node.
+func (g *Goldie) GetNodeDetails(id, kind, label string) (*store.NodeDetails, error) {
+	return g.store.GetNodeDetails(id, kind, label)
+}
+
+// MergeNodes merges a duplicate concept into a target concept.
+func (g *Goldie) MergeNodes(sourceRef, targetRef string) (*store.MergeNodesResult, error) {
+	result, err := g.store.MergeConceptNodes(sourceRef, targetRef)
+	if err != nil {
+		return nil, err
+	}
+	if err := g.RefreshNodeEmbeddings(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// LinkMemory manually attaches a memory to a concept.
+func (g *Goldie) LinkMemory(memoryRef, conceptRef, relation string) (*store.LinkMemoryResult, error) {
+	memory, err := g.findMemory(memoryRef)
+	if err != nil {
+		return nil, err
+	}
+	if memory == nil {
+		return nil, fmt.Errorf("memory not found: %s", memoryRef)
+	}
+	result, err := g.store.LinkMemoryToConcept(memory.ID, conceptRef, relation, "manual")
+	if err != nil {
+		return nil, err
+	}
+	if err := g.RefreshNodeEmbeddings(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // GetMemory looks up a memory by id, falling back to name lookup.
 func (g *Goldie) GetMemory(idOrName string) (*store.Memory, error) {
 	return g.findMemory(idOrName)

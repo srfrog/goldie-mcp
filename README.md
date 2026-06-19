@@ -298,6 +298,32 @@ Trace hybrid recall for a query. Returns vector matches, grouped concept recall,
 - `limit` (optional): max results per section (default 5, max 20)
 - `type`, `agent`, `source` (optional filters)
 
+### get_node
+
+Inspect one graph node with aliases plus incoming and outgoing edges.
+
+**Parameters:**
+- `id` (optional): graph node id
+- `label` (optional): exact node label when id is omitted
+- `kind` (optional): node kind when resolving by label (default `concept`)
+
+### merge_nodes
+
+Merge a duplicate concept into a canonical concept. Moves aliases and edges with collision-safe deduplication, then deletes the source node.
+
+**Parameters:**
+- `source` (required): duplicate concept id, exact label, or alias
+- `target` (required): canonical concept id, exact label, or alias
+
+### link_memory
+
+Manually attach a memory to a concept. Creates the concept if the label is new.
+
+**Parameters:**
+- `memory` (required): memory id or name
+- `concept` (required): concept id, exact label, alias, or new concept label
+- `relation` (optional): `about`, `mentions`, or `canonical_for` (default `about`)
+
 ### index_file
 
 Import a file as a `reference` memory. The memory's `name` is the absolute path; re-indexing updates in place when the checksum changes.

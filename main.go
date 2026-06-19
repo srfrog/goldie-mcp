@@ -300,6 +300,35 @@ func registerTools(s *server.MCPServer) {
 	)
 
 	s.AddTool(
+		mcp.NewTool("get_node",
+			mcp.WithDescription("Inspect one graph node with aliases plus incoming and outgoing edges. Use this before merge_nodes or link_memory cleanup operations."),
+			mcp.WithString("id", mcp.Description("Graph node id")),
+			mcp.WithString("kind", mcp.Description("Node kind when resolving by label; default concept")),
+			mcp.WithString("label", mcp.Description("Exact node label to resolve when id is omitted")),
+		),
+		handleGetNode,
+	)
+
+	s.AddTool(
+		mcp.NewTool("merge_nodes",
+			mcp.WithDescription("Merge a duplicate concept node into a target concept. Re-points aliases and edges with collision-safe deduplication, then deletes the source node."),
+			mcp.WithString("source", mcp.Required(), mcp.Description("Duplicate concept id, exact label, or alias to merge away")),
+			mcp.WithString("target", mcp.Required(), mcp.Description("Canonical concept id, exact label, or alias to keep")),
+		),
+		handleMergeNodes,
+	)
+
+	s.AddTool(
+		mcp.NewTool("link_memory",
+			mcp.WithDescription("Manually attach a memory to a concept with a graph edge. Creates the concept if the label is new. Relation defaults to about."),
+			mcp.WithString("memory", mcp.Required(), mcp.Description("Memory id or name")),
+			mcp.WithString("concept", mcp.Required(), mcp.Description("Concept id, exact label, alias, or new concept label")),
+			mcp.WithString("relation", mcp.Description("Relation to create: about, mentions, or canonical_for (default: about)")),
+		),
+		handleLinkMemory,
+	)
+
+	s.AddTool(
 		mcp.NewTool("index_file",
 			mcp.WithDescription("Import a file from the filesystem as a reference memory. The memory's name is the absolute path; re-indexing the same path updates in place when the file's checksum changes. Set `agent` to your agent identity (e.g. 'claude-opus-4-7', 'codex') so future sessions can filter by provenance."),
 			mcp.WithString("path", mcp.Required(), mcp.Description("Path to the file")),
@@ -404,6 +433,45 @@ func nodeInspectionSummary(n store.Node) map[string]any {
 		"alias_count":      n.AliasCount,
 		"outgoing_count":   n.OutgoingCount,
 		"incoming_count":   n.IncomingCount,
+	}
+}
+
+func nodeAliasSummary(a store.NodeAlias) map[string]any {
+	return map[string]any{
+		"alias":            a.Alias,
+		"normalized_alias": a.NormalizedAlias,
+		"source":           a.Source,
+	}
+}
+
+func edgeDetailSummary(edge store.EdgeDetail) map[string]any {
+	return map[string]any{
+		"relation":           edge.Relation,
+		"origin":             edge.Origin,
+		"confidence":         edge.Confidence,
+		"evidence_memory_id": edge.EvidenceMemoryID,
+		"node":               nodeSummary(edge.Node),
+	}
+}
+
+func nodeDetailsSummary(details *store.NodeDetails) map[string]any {
+	aliases := make([]map[string]any, 0, len(details.Aliases))
+	for _, alias := range details.Aliases {
+		aliases = append(aliases, nodeAliasSummary(alias))
+	}
+	outgoing := make([]map[string]any, 0, len(details.Outgoing))
+	for _, edge := range details.Outgoing {
+		outgoing = append(outgoing, edgeDetailSummary(edge))
+	}
+	incoming := make([]map[string]any, 0, len(details.Incoming))
+	for _, edge := range details.Incoming {
+		incoming = append(incoming, edgeDetailSummary(edge))
+	}
+	return map[string]any{
+		"node":     nodeSummary(details.Node),
+		"aliases":  aliases,
+		"outgoing": outgoing,
+		"incoming": incoming,
 	}
 }
 
@@ -749,6 +817,67 @@ func handleListNodes(_ context.Context, request mcp.CallToolRequest) (*mcp.CallT
 		"count":   len(nodes),
 		"nodes":   summaries,
 		"message": formatMessage("Found %d node(s)", len(nodes)),
+	})), nil
+}
+
+func handleGetNode(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	details, err := goldieInstance.GetNodeDetails(
+		argString(args, "id"),
+		argString(args, "kind"),
+		argString(args, "label"),
+	)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if details == nil {
+		return mcp.NewToolResultError("node not found"), nil
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"node":    nodeDetailsSummary(details),
+		"message": formatMessage("Fetched node %q", details.Node.Label),
+	})), nil
+}
+
+func handleMergeNodes(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	source := argString(args, "source")
+	target := argString(args, "target")
+	if source == "" || target == "" {
+		return mcp.NewToolResultError("source and target are required"), nil
+	}
+	result, err := goldieInstance.MergeNodes(source, target)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"success":       true,
+		"source":        nodeSummary(result.Source),
+		"target":        nodeSummary(result.Target),
+		"aliases_moved": result.AliasesMoved,
+		"edges_moved":   result.EdgesMoved,
+		"message":       formatMessage("Merged %q into %q", result.Source.Label, result.Target.Label),
+	})), nil
+}
+
+func handleLinkMemory(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.Params.Arguments
+	memory := argString(args, "memory")
+	concept := argString(args, "concept")
+	if memory == "" || concept == "" {
+		return mcp.NewToolResultError("memory and concept are required"), nil
+	}
+	result, err := goldieInstance.LinkMemory(memory, concept, argString(args, "relation"))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
+		"success":  true,
+		"memory":   memorySummary(result.Memory),
+		"concept":  nodeSummary(result.Concept),
+		"relation": result.Relation,
+		"origin":   result.Origin,
+		"message":  formatMessage("Linked %q %s %q", result.Memory.Name, result.Relation, result.Concept.Label),
 	})), nil
 }
 

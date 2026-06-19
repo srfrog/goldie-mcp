@@ -18,6 +18,8 @@ const (
 	JobTypeGraphBackfill  = "graph_backfill"
 	JobTypeGraphHarvest   = "graph_harvest"
 	RelationAbout         = "about"
+	RelationMentions      = "mentions"
+	RelationCanonicalFor  = "canonical_for"
 	RelationPartOf        = "part_of"
 	defaultFacetThreshold = 2
 )
@@ -84,6 +86,41 @@ type NodeSearchResult struct {
 	Node     Node
 	Score    float32
 	Distance float32
+}
+
+type NodeAlias struct {
+	Alias           string
+	NormalizedAlias string
+	Source          string
+}
+
+type EdgeDetail struct {
+	Relation         string
+	Origin           string
+	Confidence       float64
+	EvidenceMemoryID string
+	Node             Node
+}
+
+type NodeDetails struct {
+	Node     Node
+	Aliases  []NodeAlias
+	Outgoing []EdgeDetail
+	Incoming []EdgeDetail
+}
+
+type MergeNodesResult struct {
+	Target       Node
+	Source       Node
+	AliasesMoved int
+	EdgesMoved   int
+}
+
+type LinkMemoryResult struct {
+	Memory   Memory
+	Concept  Node
+	Relation string
+	Origin   string
 }
 
 func (s *Store) initGraphSchema() error {
@@ -329,6 +366,51 @@ func ensureConceptNodeTx(tx *sql.Tx, label string) (string, error) {
 	return nodeID, nil
 }
 
+func ensureOrResolveConceptNodeTx(tx *sql.Tx, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("concept reference is required")
+	}
+	node, err := queryNodeTx(tx, `
+		SELECT id, kind, label, normalized_label
+		FROM nodes
+		WHERE kind = ? AND id = ?
+	`, NodeKindConcept, ref)
+	if err != nil {
+		return "", err
+	}
+	if node != nil {
+		return node.ID, nil
+	}
+
+	normalized := NormalizeLabel(ref)
+	node, err = queryNodeTx(tx, `
+		SELECT id, kind, label, normalized_label
+		FROM nodes
+		WHERE kind = ? AND normalized_label = ?
+	`, NodeKindConcept, normalized)
+	if err != nil {
+		return "", err
+	}
+	if node != nil {
+		return node.ID, nil
+	}
+
+	node, err = queryNodeTx(tx, `
+		SELECT n.id, n.kind, n.label, n.normalized_label
+		FROM node_aliases a
+		JOIN nodes n ON a.node_id = n.id
+		WHERE n.kind = ? AND a.normalized_alias = ?
+	`, NodeKindConcept, normalized)
+	if err != nil {
+		return "", err
+	}
+	if node != nil {
+		return node.ID, nil
+	}
+	return ensureConceptNodeTx(tx, ref)
+}
+
 func ensureEdgeTx(tx *sql.Tx, srcNodeID, relation, dstNodeID, evidenceMemoryID string) error {
 	return ensureEdgeWithOriginTx(tx, srcNodeID, relation, dstNodeID, evidenceMemoryID, "harvest")
 }
@@ -371,6 +453,182 @@ func ensureAliasTx(tx *sql.Tx, nodeID, alias, source string) error {
 		return fmt.Errorf("inserting node alias: %w", err)
 	}
 	return nil
+}
+
+func queryNodeTx(tx *sql.Tx, query string, args ...any) (*Node, error) {
+	var node Node
+	err := tx.QueryRow(query, args...).Scan(
+		&node.ID,
+		&node.Kind,
+		&node.Label,
+		&node.NormalizedLabel,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying graph node: %w", err)
+	}
+	return &node, nil
+}
+
+func getMemoryTx(tx *sql.Tx, id string) (*Memory, error) {
+	row := tx.QueryRow(`
+		SELECT id, name, type, description, body, agent, source, checksum, node_id, created_at, updated_at
+		FROM memories
+		WHERE id = ?
+	`, id)
+	memory, err := scanMemoryRow(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("querying memory: %w", err)
+	}
+	return memory, nil
+}
+
+func moveNodeAliasesTx(tx *sql.Tx, sourceNodeID, targetNodeID, sourceLabel string) (int, error) {
+	moved := 0
+	if err := ensureAliasTx(tx, targetNodeID, sourceLabel, "merge"); err != nil {
+		return 0, err
+	}
+	moved++
+
+	rows, err := tx.Query(`
+		SELECT alias, source
+		FROM node_aliases
+		WHERE node_id = ?
+	`, sourceNodeID)
+	if err != nil {
+		return 0, fmt.Errorf("querying source aliases: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var alias, source string
+		if err := rows.Scan(&alias, &source); err != nil {
+			return 0, fmt.Errorf("scanning source alias: %w", err)
+		}
+		if err := ensureAliasTx(tx, targetNodeID, alias, source); err != nil {
+			return 0, err
+		}
+		moved++
+	}
+	return moved, rows.Err()
+}
+
+func moveNodeEdgesTx(tx *sql.Tx, sourceNodeID, targetNodeID string) (int, error) {
+	moved := 0
+	type edgeCopy struct {
+		srcNodeID        string
+		relation         string
+		dstNodeID        string
+		confidence       float64
+		evidenceMemoryID string
+		origin           string
+	}
+	var edges []edgeCopy
+
+	outgoing, err := tx.Query(`
+		SELECT relation, dst_node_id, confidence, COALESCE(evidence_memory_id, ''), origin
+		FROM edges
+		WHERE src_node_id = ?
+	`, sourceNodeID)
+	if err != nil {
+		return 0, fmt.Errorf("querying outgoing source edges: %w", err)
+	}
+	for outgoing.Next() {
+		var relation, dstNodeID, evidenceMemoryID, origin string
+		var confidence float64
+		if err := outgoing.Scan(&relation, &dstNodeID, &confidence, &evidenceMemoryID, &origin); err != nil {
+			outgoing.Close()
+			return 0, fmt.Errorf("scanning outgoing source edge: %w", err)
+		}
+		if dstNodeID == targetNodeID {
+			continue
+		}
+		edges = append(edges, edgeCopy{
+			srcNodeID:        targetNodeID,
+			relation:         relation,
+			dstNodeID:        dstNodeID,
+			confidence:       confidence,
+			evidenceMemoryID: evidenceMemoryID,
+			origin:           origin,
+		})
+	}
+	if err := outgoing.Close(); err != nil {
+		return 0, err
+	}
+	if err := outgoing.Err(); err != nil {
+		return 0, err
+	}
+
+	incoming, err := tx.Query(`
+		SELECT src_node_id, relation, confidence, COALESCE(evidence_memory_id, ''), origin
+		FROM edges
+		WHERE dst_node_id = ?
+	`, sourceNodeID)
+	if err != nil {
+		return 0, fmt.Errorf("querying incoming source edges: %w", err)
+	}
+	for incoming.Next() {
+		var srcNodeID, relation, evidenceMemoryID, origin string
+		var confidence float64
+		if err := incoming.Scan(&srcNodeID, &relation, &confidence, &evidenceMemoryID, &origin); err != nil {
+			incoming.Close()
+			return 0, fmt.Errorf("scanning incoming source edge: %w", err)
+		}
+		if srcNodeID == targetNodeID {
+			continue
+		}
+		edges = append(edges, edgeCopy{
+			srcNodeID:        srcNodeID,
+			relation:         relation,
+			dstNodeID:        targetNodeID,
+			confidence:       confidence,
+			evidenceMemoryID: evidenceMemoryID,
+			origin:           origin,
+		})
+	}
+	if err := incoming.Close(); err != nil {
+		return 0, err
+	}
+	if err := incoming.Err(); err != nil {
+		return 0, err
+	}
+	for _, edge := range edges {
+		if err := insertEdgeCopyTx(tx, edge.srcNodeID, edge.relation, edge.dstNodeID, edge.confidence, edge.evidenceMemoryID, edge.origin); err != nil {
+			return 0, err
+		}
+		moved++
+	}
+	return moved, nil
+}
+
+func insertEdgeCopyTx(tx *sql.Tx, srcNodeID, relation, dstNodeID string, confidence float64, evidenceMemoryID, origin string) error {
+	var evidence any
+	if evidenceMemoryID != "" {
+		evidence = evidenceMemoryID
+	}
+	_, err := tx.Exec(`
+		INSERT INTO edges (id, src_node_id, relation, dst_node_id, confidence, evidence_memory_id, origin)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(src_node_id, relation, dst_node_id) DO NOTHING
+	`, uuid.New().String(), srcNodeID, relation, dstNodeID, confidence, evidence, origin)
+	if err != nil {
+		return fmt.Errorf("copying graph edge: %w", err)
+	}
+	return nil
+}
+
+func validMemoryConceptRelation(relation string) bool {
+	switch relation {
+	case RelationAbout, RelationMentions, RelationCanonicalFor:
+		return true
+	default:
+		return false
+	}
 }
 
 func deleteMemoryGraphTx(tx *sql.Tx, memoryID, nodeID string) error {
@@ -562,6 +820,262 @@ func (s *Store) SearchConceptNodes(embedding []float32, limit int) ([]NodeSearch
 		}
 		result.Score = 1 - result.Distance
 		out = append(out, result)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ResolveConceptNode(ref string) (*Node, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, fmt.Errorf("concept reference is required")
+	}
+	node, err := s.queryNode(`
+		SELECT id, kind, label, normalized_label
+		FROM nodes
+		WHERE kind = ? AND id = ?
+	`, NodeKindConcept, ref)
+	if err != nil || node != nil {
+		return node, err
+	}
+	return s.findConcept(ref)
+}
+
+func (s *Store) GetNodeDetails(id, kind, label string) (*NodeDetails, error) {
+	node, err := s.resolveNode(id, kind, label)
+	if err != nil || node == nil {
+		return nil, err
+	}
+	aliases, err := s.nodeAliases(node.ID)
+	if err != nil {
+		return nil, err
+	}
+	outgoing, err := s.nodeEdges(node.ID, true)
+	if err != nil {
+		return nil, err
+	}
+	incoming, err := s.nodeEdges(node.ID, false)
+	if err != nil {
+		return nil, err
+	}
+	return &NodeDetails{
+		Node:     *node,
+		Aliases:  aliases,
+		Outgoing: outgoing,
+		Incoming: incoming,
+	}, nil
+}
+
+func (s *Store) MergeConceptNodes(sourceRef, targetRef string) (*MergeNodesResult, error) {
+	source, err := s.ResolveConceptNode(sourceRef)
+	if err != nil {
+		return nil, err
+	}
+	if source == nil {
+		return nil, fmt.Errorf("source concept not found: %s", sourceRef)
+	}
+	target, err := s.ResolveConceptNode(targetRef)
+	if err != nil {
+		return nil, err
+	}
+	if target == nil {
+		return nil, fmt.Errorf("target concept not found: %s", targetRef)
+	}
+	if source.ID == target.ID {
+		return nil, fmt.Errorf("source and target are the same concept")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("beginning merge transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	aliasesMoved, err := moveNodeAliasesTx(tx, source.ID, target.ID, source.Label)
+	if err != nil {
+		return nil, err
+	}
+	edgesMoved, err := moveNodeEdgesTx(tx, source.ID, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec("DELETE FROM nodes_vec WHERE id = ?", source.ID); err != nil {
+		return nil, fmt.Errorf("deleting source node vector: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM node_aliases WHERE node_id = ?", source.ID); err != nil {
+		return nil, fmt.Errorf("deleting source aliases: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM edges WHERE src_node_id = ? OR dst_node_id = ?", source.ID, source.ID); err != nil {
+		return nil, fmt.Errorf("deleting source edges: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM nodes WHERE id = ?", source.ID); err != nil {
+		return nil, fmt.Errorf("deleting source node: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing node merge: %w", err)
+	}
+
+	return &MergeNodesResult{
+		Target:       *target,
+		Source:       *source,
+		AliasesMoved: aliasesMoved,
+		EdgesMoved:   edgesMoved,
+	}, nil
+}
+
+func (s *Store) LinkMemoryToConcept(memoryID, conceptRef, relation, origin string) (*LinkMemoryResult, error) {
+	if relation == "" {
+		relation = RelationAbout
+	}
+	if origin == "" {
+		origin = "manual"
+	}
+	if !validMemoryConceptRelation(relation) {
+		return nil, fmt.Errorf("invalid memory concept relation %q", relation)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("beginning link transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	memory, err := getMemoryTx(tx, memoryID)
+	if err != nil {
+		return nil, err
+	}
+	if memory == nil {
+		return nil, fmt.Errorf("memory not found: %s", memoryID)
+	}
+	if memory.NodeID == "" {
+		nodeID, err := ensureMemoryNodeTx(tx, memory.ID, memory.Name)
+		if err != nil {
+			return nil, err
+		}
+		memory.NodeID = nodeID
+	}
+
+	conceptID, err := ensureOrResolveConceptNodeTx(tx, conceptRef)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureEdgeWithOriginTx(tx, memory.NodeID, relation, conceptID, memory.ID, origin); err != nil {
+		return nil, err
+	}
+	concept, err := queryNodeTx(tx, `
+		SELECT id, kind, label, normalized_label
+		FROM nodes
+		WHERE id = ?
+	`, conceptID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing memory link: %w", err)
+	}
+
+	return &LinkMemoryResult{
+		Memory:   *memory,
+		Concept:  *concept,
+		Relation: relation,
+		Origin:   origin,
+	}, nil
+}
+
+func (s *Store) resolveNode(id, kind, label string) (*Node, error) {
+	id = strings.TrimSpace(id)
+	kind = strings.TrimSpace(kind)
+	label = strings.TrimSpace(label)
+	if id != "" {
+		query := `
+			SELECT id, kind, label, normalized_label
+			FROM nodes
+			WHERE id = ?`
+		args := []any{id}
+		if kind != "" {
+			query += " AND kind = ?"
+			args = append(args, kind)
+		}
+		return s.queryNode(query, args...)
+	}
+	if label == "" {
+		return nil, fmt.Errorf("id or label is required")
+	}
+	if kind == "" {
+		kind = NodeKindConcept
+	}
+	return s.queryNode(`
+		SELECT id, kind, label, normalized_label
+		FROM nodes
+		WHERE kind = ? AND normalized_label = ?
+	`, kind, NormalizeLabel(label))
+}
+
+func (s *Store) nodeAliases(nodeID string) ([]NodeAlias, error) {
+	rows, err := s.db.Query(`
+		SELECT alias, normalized_alias, source
+		FROM node_aliases
+		WHERE node_id = ?
+		ORDER BY alias
+	`, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("querying node aliases: %w", err)
+	}
+	defer rows.Close()
+
+	var out []NodeAlias
+	for rows.Next() {
+		var alias NodeAlias
+		if err := rows.Scan(&alias.Alias, &alias.NormalizedAlias, &alias.Source); err != nil {
+			return nil, fmt.Errorf("scanning node alias: %w", err)
+		}
+		out = append(out, alias)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) nodeEdges(nodeID string, outgoing bool) ([]EdgeDetail, error) {
+	selectNode := "e.dst_node_id"
+	where := "e.src_node_id = ?"
+	if !outgoing {
+		selectNode = "e.src_node_id"
+		where = "e.dst_node_id = ?"
+	}
+	rows, err := s.db.Query(fmt.Sprintf(`
+		SELECT
+			e.relation,
+			e.origin,
+			e.confidence,
+			COALESCE(e.evidence_memory_id, ''),
+			n.id,
+			n.kind,
+			n.label,
+			n.normalized_label
+		FROM edges e
+		JOIN nodes n ON n.id = %s
+		WHERE %s
+		ORDER BY e.relation, n.kind, n.label
+	`, selectNode, where), nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("querying node edges: %w", err)
+	}
+	defer rows.Close()
+
+	var out []EdgeDetail
+	for rows.Next() {
+		var edge EdgeDetail
+		if err := rows.Scan(
+			&edge.Relation,
+			&edge.Origin,
+			&edge.Confidence,
+			&edge.EvidenceMemoryID,
+			&edge.Node.ID,
+			&edge.Node.Kind,
+			&edge.Node.Label,
+			&edge.Node.NormalizedLabel,
+		); err != nil {
+			return nil, fmt.Errorf("scanning node edge: %w", err)
+		}
+		out = append(out, edge)
 	}
 	return out, rows.Err()
 }

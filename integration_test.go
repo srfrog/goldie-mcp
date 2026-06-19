@@ -149,6 +149,12 @@ func (ts *TestSetup) CallTool(t *testing.T, toolName string, args map[string]any
 		result, err = handleCountMemories(ctx, req)
 	case "list_nodes":
 		result, err = handleListNodes(ctx, req)
+	case "get_node":
+		result, err = handleGetNode(ctx, req)
+	case "merge_nodes":
+		result, err = handleMergeNodes(ctx, req)
+	case "link_memory":
+		result, err = handleLinkMemory(ctx, req)
 	case "index_file":
 		result, err = handleIndexFile(ctx, req)
 	case "index_directory":
@@ -794,6 +800,70 @@ func TestMCP_RecallIncludesAutomaticRecall(t *testing.T) {
 	}
 	if explainedAutomatic["converged"] != true {
 		t.Fatalf("expected explained automatic recall to converge, got %v", explainedAutomatic)
+	}
+}
+
+func TestMCP_GraphCleanupTools(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	for _, name := range []string{"manual_auth_note", "manual_auth_duplicate_note"} {
+		resp := ts.CallTool(t, "remember", map[string]any{
+			"name": name,
+			"type": "project",
+			"body": "Manual auth cleanup memory " + name,
+		})
+		if resp["success"] != true {
+			t.Fatalf("remember failed: %v", resp)
+		}
+	}
+
+	link := ts.CallTool(t, "link_memory", map[string]any{
+		"memory":  "manual_auth_note",
+		"concept": "Manual Auth",
+	})
+	if link["success"] != true {
+		t.Fatalf("link_memory target failed: %v", link)
+	}
+	link = ts.CallTool(t, "link_memory", map[string]any{
+		"memory":  "manual_auth_duplicate_note",
+		"concept": "Manual Auth Duplicate",
+	})
+	if link["success"] != true {
+		t.Fatalf("link_memory source failed: %v", link)
+	}
+
+	nodeResp := ts.CallTool(t, "get_node", map[string]any{
+		"label": "Manual Auth Duplicate",
+	})
+	node, ok := nodeResp["node"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected node details, got %v", nodeResp)
+	}
+	if detailsNode := node["node"].(map[string]any); detailsNode["label"] != "Manual Auth Duplicate" {
+		t.Fatalf("expected Manual Auth Duplicate node, got %v", node)
+	}
+
+	merge := ts.CallTool(t, "merge_nodes", map[string]any{
+		"source": "Manual Auth Duplicate",
+		"target": "Manual Auth",
+	})
+	if merge["success"] != true {
+		t.Fatalf("merge_nodes failed: %v", merge)
+	}
+
+	recall := ts.CallTool(t, "recall", map[string]any{
+		"query": "Manual Auth",
+		"limit": 5,
+	})
+	conceptRecall, ok := recall["concept_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected concept_recall, got %v", recall)
+	}
+	direct := conceptRecall["direct"].([]any)
+	if len(direct) != 2 {
+		t.Fatalf("expected 2 manually linked memories after merge, got %d", len(direct))
 	}
 }
 

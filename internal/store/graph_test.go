@@ -505,3 +505,102 @@ func TestAutomaticRecallUsesFuzzyConceptEmbedding(t *testing.T) {
 		t.Fatalf("expected fuzzy recall to converge, stop_reason=%s", recall.StopReason)
 	}
 }
+
+func TestMergeConceptNodesDeduplicatesEdgeCollisions(t *testing.T) {
+	st := newTestStore(t)
+
+	m := addTestMemory(t, st, "tuplia_cloud_platform_auth")
+	tx, err := st.db.Begin()
+	if err != nil {
+		t.Fatalf("begin failed: %v", err)
+	}
+	targetID, err := ensureConceptNodeTx(tx, "Tuplia Cloud")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("ensure target failed: %v", err)
+	}
+	sourceID, err := ensureConceptNodeTx(tx, "Tuplia Cloud Platform")
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("ensure source failed: %v", err)
+	}
+	if err := ensureAliasTx(tx, sourceID, "tuplia-cloud-platform", "test"); err != nil {
+		tx.Rollback()
+		t.Fatalf("ensure alias failed: %v", err)
+	}
+	if err := ensureEdgeWithOriginTx(tx, m.NodeID, RelationAbout, targetID, m.ID, "manual"); err != nil {
+		tx.Rollback()
+		t.Fatalf("ensure target edge failed: %v", err)
+	}
+	if err := ensureEdgeWithOriginTx(tx, m.NodeID, RelationAbout, sourceID, m.ID, "manual"); err != nil {
+		tx.Rollback()
+		t.Fatalf("ensure source edge failed: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit failed: %v", err)
+	}
+
+	result, err := st.MergeConceptNodes("Tuplia Cloud Platform", "Tuplia Cloud")
+	if err != nil {
+		t.Fatalf("MergeConceptNodes failed: %v", err)
+	}
+	if result.Target.Label != "Tuplia Cloud" {
+		t.Fatalf("expected target Tuplia Cloud, got %q", result.Target.Label)
+	}
+	if source, err := st.GetNodeDetails(sourceID, "", ""); err != nil {
+		t.Fatalf("GetNodeDetails source failed: %v", err)
+	} else if source != nil {
+		t.Fatalf("expected source node removed, got %v", source)
+	}
+
+	var edgeCount int
+	if err := st.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM edges
+		WHERE src_node_id = ? AND dst_node_id = ? AND relation = ?
+	`, m.NodeID, targetID, RelationAbout).Scan(&edgeCount); err != nil {
+		t.Fatalf("count edges failed: %v", err)
+	}
+	if edgeCount != 1 {
+		t.Fatalf("expected one deduped target edge, got %d", edgeCount)
+	}
+
+	details, err := st.GetNodeDetails("", NodeKindConcept, "Tuplia Cloud")
+	if err != nil {
+		t.Fatalf("GetNodeDetails failed: %v", err)
+	}
+	foundAlias := false
+	for _, alias := range details.Aliases {
+		if alias.NormalizedAlias == "tuplia cloud platform" {
+			foundAlias = true
+			break
+		}
+	}
+	if !foundAlias {
+		t.Fatalf("expected merged source label alias, got %v", details.Aliases)
+	}
+}
+
+func TestLinkMemoryToConceptCreatesManualAboutEdge(t *testing.T) {
+	st := newTestStore(t)
+
+	m := addTestMemory(t, st, "manual_auth_note")
+	result, err := st.LinkMemoryToConcept(m.ID, "Auth", RelationAbout, "manual")
+	if err != nil {
+		t.Fatalf("LinkMemoryToConcept failed: %v", err)
+	}
+	if result.Concept.Label != "Auth" {
+		t.Fatalf("expected Auth concept, got %q", result.Concept.Label)
+	}
+
+	recall, err := st.RecallConcept("Auth", 5, MemoryFilter{})
+	if err != nil {
+		t.Fatalf("RecallConcept failed: %v", err)
+	}
+	if recall == nil || len(recall.Direct) != 1 {
+		t.Fatalf("expected direct Auth recall, got %v", recall)
+	}
+	if recall.Direct[0].Name != "manual_auth_note" {
+		t.Fatalf("expected manual_auth_note, got %q", recall.Direct[0].Name)
+	}
+}

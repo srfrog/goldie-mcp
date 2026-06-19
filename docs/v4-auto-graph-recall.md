@@ -632,9 +632,11 @@ This is the launchable v4 boundary.
 
 ### v4.2: Cleanup Tools
 
-- Expand concept inspection beyond the minimal `list_nodes` test surface.
-- Add manual merge/link tools.
-- Add dedupe assistance for near-equivalent memories.
+- Expand concept inspection beyond the minimal `list_nodes` test surface with
+  `get_node`.
+- Add manual merge/link tools: `merge_nodes` and `link_memory`.
+- Use `list_nodes`, `get_node`, and `explain_recall` as dedupe assistance for
+  near-equivalent memories and concepts.
 - Make `merge_nodes` collision-safe: re-point aliases and edges with
   `INSERT OR IGNORE` or equivalent deduplication so `UNIQUE(src_node_id, relation,
   dst_node_id)` collisions do not abort the merge.

@@ -205,6 +205,9 @@ func registerTools(s *server.MCPServer) {
 			mcp.WithString("description", mcp.Description("One-line summary of the memory's content. This text is prepended to every embedded chunk, so it directly affects recall ranking — be specific and content-rich (e.g. 'Prefer pnpm over npx for package operations') rather than generic ('user preference')")),
 			mcp.WithString("agent", mcp.Description("The agent that created this memory (e.g. 'claude-opus-4-7')")),
 			mcp.WithString("source", mcp.Description("Where the memory was generated (e.g. file path, editor, URL)")),
+			mcp.WithArray("about", mcp.Description("Optional concept labels this memory is about")),
+			mcp.WithArray("aliases", mcp.Description("Optional aliases for this memory node")),
+			mcp.WithArray("links", mcp.Description("Optional graph links: objects with relation and target")),
 		),
 		handleRemember,
 	)
@@ -251,6 +254,9 @@ func registerTools(s *server.MCPServer) {
 			mcp.WithString("body", mcp.Description("New body content")),
 			mcp.WithString("source", mcp.Description("New source (pass empty string to clear)")),
 			mcp.WithString("agent", mcp.Description("New agent (pass empty string to clear)")),
+			mcp.WithArray("about", mcp.Description("Optional concept labels this memory is about")),
+			mcp.WithArray("aliases", mcp.Description("Optional aliases for this memory node")),
+			mcp.WithArray("links", mcp.Description("Optional graph links: objects with relation and target")),
 		),
 		handleUpdateMemory,
 	)
@@ -403,6 +409,54 @@ func filterFromArgs(args map[string]any) store.MemoryFilter {
 	}
 }
 
+func hintsFromArgs(args map[string]any) store.MemoryHints {
+	return store.MemoryHints{
+		About:   argStringSlice(args, "about"),
+		Aliases: argStringSlice(args, "aliases"),
+		Links:   argLinkHints(args, "links"),
+	}
+}
+
+func argStringSlice(args map[string]any, key string) []string {
+	raw, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		value, ok := item.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func argLinkHints(args map[string]any, key string) []store.GraphLinkHint {
+	raw, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]store.GraphLinkHint, 0, len(raw))
+	for _, item := range raw {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		relation, _ := obj["relation"].(string)
+		target, _ := obj["target"].(string)
+		if strings.TrimSpace(target) == "" {
+			continue
+		}
+		out = append(out, store.GraphLinkHint{
+			Relation: relation,
+			Target:   target,
+		})
+	}
+	return out
+}
+
 func memorySummary(m store.Memory) map[string]any {
 	return map[string]any{
 		"id":          m.ID,
@@ -544,6 +598,7 @@ func handleRemember(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 		Description: argString(args, "description"),
 		Agent:       argString(args, "agent"),
 		Source:      argString(args, "source"),
+		Hints:       hintsFromArgs(args),
 	}
 
 	m, err := goldieInstance.Remember(in)
@@ -700,7 +755,8 @@ func handleUpdateMemory(_ context.Context, request mcp.CallToolRequest) (*mcp.Ca
 	}
 
 	patch := goldie.UpdateMemoryInput{
-		Type: argString(args, "type"),
+		Type:  argString(args, "type"),
+		Hints: hintsFromArgs(args),
 	}
 	if v, present := args["description"].(string); present {
 		patch.Description = &v

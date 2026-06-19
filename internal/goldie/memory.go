@@ -43,6 +43,7 @@ type RememberInput struct {
 	Description string
 	Agent       string
 	Source      string
+	Hints       store.MemoryHints
 }
 
 // UpdateMemoryInput patches an existing memory. Nil fields are left unchanged;
@@ -53,6 +54,7 @@ type UpdateMemoryInput struct {
 	Body        *string
 	Source      *string
 	Agent       *string
+	Hints       store.MemoryHints
 }
 
 // Remember creates a new memory. Returns store.ErrMemoryNameExists if the
@@ -83,6 +85,9 @@ func (g *Goldie) Remember(in RememberInput) (*store.Memory, error) {
 		Source:      in.Source,
 	}
 	if err := g.store.AddMemory(m, chunks, embeddings); err != nil {
+		return nil, err
+	}
+	if err := g.applyHints(m.ID, in.Hints); err != nil {
 		return nil, err
 	}
 	return g.store.GetMemoryByName(in.Name)
@@ -130,8 +135,21 @@ func (g *Goldie) UpdateMemory(idOrName string, in UpdateMemoryInput) (*store.Mem
 			return nil, err
 		}
 	}
+	if err := g.applyHints(existing.ID, in.Hints); err != nil {
+		return nil, err
+	}
 
 	return g.store.GetMemory(existing.ID)
+}
+
+func (g *Goldie) applyHints(memoryID string, hints store.MemoryHints) error {
+	if len(hints.About) == 0 && len(hints.Aliases) == 0 && len(hints.Links) == 0 {
+		return nil
+	}
+	if err := g.store.ApplyMemoryHints(memoryID, hints); err != nil {
+		return err
+	}
+	return g.RefreshNodeEmbeddings()
 }
 
 // RecallMemory runs semantic search over memories, optionally filtered.

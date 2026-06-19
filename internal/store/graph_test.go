@@ -604,3 +604,54 @@ func TestLinkMemoryToConceptCreatesManualAboutEdge(t *testing.T) {
 		t.Fatalf("expected manual_auth_note, got %q", recall.Direct[0].Name)
 	}
 }
+
+func TestApplyMemoryHintsSurviveHarvest(t *testing.T) {
+	st := newTestStore(t)
+
+	m := addTestMemory(t, st, "tuplia_cloud_passwordless_auth")
+	err := st.ApplyMemoryHints(m.ID, MemoryHints{
+		About:   []string{"Auth"},
+		Aliases: []string{"passwordless auth note"},
+		Links: []GraphLinkHint{{
+			Relation: RelationMentions,
+			Target:   "Passwordless Auth",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyMemoryHints failed: %v", err)
+	}
+	if err := st.RefreshHarvestedConcepts(); err != nil {
+		t.Fatalf("RefreshHarvestedConcepts failed: %v", err)
+	}
+
+	authRecall, err := st.RecallConcept("Auth", 5, MemoryFilter{})
+	if err != nil {
+		t.Fatalf("RecallConcept Auth failed: %v", err)
+	}
+	if authRecall == nil || len(authRecall.Direct) != 1 {
+		t.Fatalf("expected hint Auth recall, got %v", authRecall)
+	}
+
+	details, err := st.GetNodeDetails(m.NodeID, "", "")
+	if err != nil {
+		t.Fatalf("GetNodeDetails failed: %v", err)
+	}
+	foundAlias := false
+	foundMention := false
+	for _, alias := range details.Aliases {
+		if alias.NormalizedAlias == "passwordless auth note" && alias.Source == "hint" {
+			foundAlias = true
+		}
+	}
+	for _, edge := range details.Outgoing {
+		if edge.Relation == RelationMentions && edge.Origin == "hint" && edge.Node.Label == "Passwordless Auth" {
+			foundMention = true
+		}
+	}
+	if !foundAlias {
+		t.Fatalf("expected hint alias, got %v", details.Aliases)
+	}
+	if !foundMention {
+		t.Fatalf("expected hint mentions edge, got %v", details.Outgoing)
+	}
+}

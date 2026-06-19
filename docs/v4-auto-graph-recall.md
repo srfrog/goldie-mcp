@@ -645,6 +645,8 @@ This is the launchable v4 boundary.
 
 - Add optional `about`, `aliases`, and `links` parameters.
 - Keep plain `remember` as the default path.
+- Store hint-origin edges and aliases separately from harvested graph edges so harvest
+  does not clobber explicit agent intent.
 - Document how agents should use hints without requiring them.
 
 ## Open Questions

@@ -867,6 +867,58 @@ func TestMCP_GraphCleanupTools(t *testing.T) {
 	}
 }
 
+func TestMCP_RememberAndUpdateApplyGraphHints(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	resp := ts.CallTool(t, "remember", map[string]any{
+		"name":    "hinted_tuplia_auth_note",
+		"type":    "project",
+		"body":    "Tuplia auth hint body",
+		"about":   []any{"Tuplia", "Auth"},
+		"aliases": []any{"tuplia auth hint"},
+		"links": []any{
+			map[string]any{"relation": "mentions", "target": "Passwordless Auth"},
+		},
+	})
+	if resp["success"] != true {
+		t.Fatalf("remember failed: %v", resp)
+	}
+
+	recall := ts.CallTool(t, "recall", map[string]any{
+		"query": "Auth",
+		"limit": 5,
+	})
+	conceptRecall, ok := recall["concept_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected Auth concept_recall, got %v", recall)
+	}
+	if len(conceptRecall["direct"].([]any)) != 1 {
+		t.Fatalf("expected hinted Auth direct memory, got %v", conceptRecall)
+	}
+
+	update := ts.CallTool(t, "update_memory", map[string]any{
+		"id_or_name": "hinted_tuplia_auth_note",
+		"about":      []any{"Security"},
+	})
+	if update["success"] != true {
+		t.Fatalf("update_memory failed: %v", update)
+	}
+
+	recall = ts.CallTool(t, "recall", map[string]any{
+		"query": "Security",
+		"limit": 5,
+	})
+	conceptRecall, ok = recall["concept_recall"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected Security concept_recall, got %v", recall)
+	}
+	if len(conceptRecall["direct"].([]any)) != 1 {
+		t.Fatalf("expected hinted Security direct memory, got %v", conceptRecall)
+	}
+}
+
 func TestMCP_GetMemory(t *testing.T) {
 	ts := NewTestSetup(t)
 	defer ts.Cleanup()

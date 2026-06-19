@@ -123,6 +123,17 @@ type LinkMemoryResult struct {
 	Origin   string
 }
 
+type GraphLinkHint struct {
+	Relation string
+	Target   string
+}
+
+type MemoryHints struct {
+	About   []string
+	Aliases []string
+	Links   []GraphLinkHint
+}
+
 func (s *Store) initGraphSchema() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS nodes (
@@ -631,6 +642,25 @@ func validMemoryConceptRelation(relation string) bool {
 	}
 }
 
+func validOpenRelation(relation string) bool {
+	if relation == "" {
+		return false
+	}
+	for _, r := range relation {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func deleteMemoryGraphTx(tx *sql.Tx, memoryID, nodeID string) error {
 	if nodeID != "" {
 		if _, err := tx.Exec("DELETE FROM edges WHERE src_node_id = ? OR dst_node_id = ?", nodeID, nodeID); err != nil {
@@ -979,6 +1009,65 @@ func (s *Store) LinkMemoryToConcept(memoryID, conceptRef, relation, origin strin
 		Relation: relation,
 		Origin:   origin,
 	}, nil
+}
+
+func (s *Store) ApplyMemoryHints(memoryID string, hints MemoryHints) error {
+	if len(hints.About) == 0 && len(hints.Aliases) == 0 && len(hints.Links) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning hint transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	memory, err := getMemoryTx(tx, memoryID)
+	if err != nil {
+		return err
+	}
+	if memory == nil {
+		return fmt.Errorf("memory not found: %s", memoryID)
+	}
+	if memory.NodeID == "" {
+		nodeID, err := ensureMemoryNodeTx(tx, memory.ID, memory.Name)
+		if err != nil {
+			return err
+		}
+		memory.NodeID = nodeID
+	}
+
+	for _, alias := range hints.Aliases {
+		if err := ensureAliasTx(tx, memory.NodeID, alias, "hint"); err != nil {
+			return err
+		}
+	}
+	for _, conceptRef := range hints.About {
+		conceptID, err := ensureOrResolveConceptNodeTx(tx, conceptRef)
+		if err != nil {
+			return err
+		}
+		if err := ensureEdgeWithOriginTx(tx, memory.NodeID, RelationAbout, conceptID, memory.ID, "hint"); err != nil {
+			return err
+		}
+	}
+	for _, link := range hints.Links {
+		relation := strings.TrimSpace(link.Relation)
+		if relation == "" {
+			relation = RelationMentions
+		}
+		if !validOpenRelation(relation) {
+			return fmt.Errorf("invalid graph relation %q", relation)
+		}
+		targetID, err := ensureOrResolveConceptNodeTx(tx, link.Target)
+		if err != nil {
+			return err
+		}
+		if err := ensureEdgeWithOriginTx(tx, memory.NodeID, relation, targetID, memory.ID, "hint"); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) resolveNode(id, kind, label string) (*Node, error) {

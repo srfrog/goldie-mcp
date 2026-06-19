@@ -241,6 +241,9 @@ Create a new memory. Fails if `name` is already in use — recall it and use `up
 - `description` (optional): One-line summary
 - `agent` (optional): Agent that created the memory
 - `source` (optional): Where the memory was generated
+- `about` (optional): concept labels this memory is about
+- `aliases` (optional): aliases for this memory node
+- `links` (optional): graph links as `{relation, target}` objects
 
 ### recall
 
@@ -258,6 +261,7 @@ Update an existing memory by id or name. Body/description changes re-embed.
 **Parameters:**
 - `id_or_name` (required)
 - `type`, `description`, `body`, `source`, `agent` (optional patches)
+- `about`, `aliases`, `links` (optional graph hints)
 
 ### forget
 

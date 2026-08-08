@@ -5,6 +5,7 @@
 *.so
 *.dylib
 goldie-mcp
+apps/macos/.build
 
 # Test binary
 *.test

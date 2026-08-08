@@ -24,7 +24,7 @@ Graph harvest runs asynchronously. `remember` creates the memory and memory node
 
 Optional graph hints can reinforce the harvested graph. `about` attaches a memory to concept labels, `aliases` adds alternate names to the memory node, and `links` adds explicit graph edges as `{relation, target}` objects. Hint-origin edges and aliases are preserved across harvest.
 
-Graph inspection and cleanup tools are available for maintenance: `list_nodes`, `get_node`, and `explain_recall` show what the graph is doing; `link_memory` manually attaches a memory to a concept; `merge_nodes` merges duplicate concepts with collision-safe edge and alias movement.
+Graph inspection and cleanup tools are available for maintenance: `list_nodes`, `get_node` (aliased as `map`), and `explain_recall` show what the graph is doing; `link_memory` manually attaches a memory to a concept; `merge_nodes` merges duplicate concepts with collision-safe edge and alias movement.
 
 ## Upgrading Existing Databases
 
@@ -330,7 +330,7 @@ Trace hybrid recall for a query. Returns vector matches, grouped concept recall,
 
 ### get_node
 
-Inspect one graph node with aliases plus incoming and outgoing edges.
+Inspect one graph node with aliases plus incoming and outgoing edges. Aliased as `map` — same tool, shorter name for quick topic browsing.
 
 **Parameters:**
 - `id` (optional): graph node id

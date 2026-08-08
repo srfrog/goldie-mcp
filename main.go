@@ -316,6 +316,16 @@ func registerTools(s *server.MCPServer) {
 	)
 
 	s.AddTool(
+		mcp.NewTool("map",
+			mcp.WithDescription("Alias for get_node. Map out a topic: aliases plus every incoming and outgoing edge (sub-concepts and linked memories) for one graph node."),
+			mcp.WithString("id", mcp.Description("Graph node id")),
+			mcp.WithString("kind", mcp.Description("Node kind when resolving by label; default concept")),
+			mcp.WithString("label", mcp.Description("Exact node label to resolve when id is omitted")),
+		),
+		handleGetNode,
+	)
+
+	s.AddTool(
 		mcp.NewTool("merge_nodes",
 			mcp.WithDescription("Merge a duplicate concept node into a target concept. Re-points aliases and edges with collision-safe deduplication, then deletes the source node."),
 			mcp.WithString("source", mcp.Required(), mcp.Description("Duplicate concept id, exact label, or alias to merge away")),

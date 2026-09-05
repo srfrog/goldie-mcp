@@ -177,6 +177,11 @@ func (s *Store) AddMemory(m *Memory, chunkContents []string, chunkEmbeddings [][
 // ReplaceMemoryChunks deletes all existing chunks for the given memory and
 // inserts the provided chunks/embeddings. Used when a memory's body is rewritten.
 func (s *Store) ReplaceMemoryChunks(memoryID string, chunkContents []string, chunkEmbeddings [][]float32) error {
+	return s.UpdateMemoryWithChunks(memoryID, MemoryUpdate{}, chunkContents, chunkEmbeddings)
+}
+
+// UpdateMemoryWithChunks commits fields and their searchable chunks together.
+func (s *Store) UpdateMemoryWithChunks(memoryID string, fields MemoryUpdate, chunkContents []string, chunkEmbeddings [][]float32) error {
 	if len(chunkContents) != len(chunkEmbeddings) {
 		return fmt.Errorf("chunk contents (%d) and embeddings (%d) length mismatch", len(chunkContents), len(chunkEmbeddings))
 	}
@@ -187,6 +192,9 @@ func (s *Store) ReplaceMemoryChunks(memoryID string, chunkContents []string, chu
 	}
 	defer tx.Rollback()
 
+	if err := updateMemoryFields(tx, memoryID, fields); err != nil {
+		return err
+	}
 	if err := deleteChunksTx(tx, memoryID); err != nil {
 		return err
 	}
@@ -198,10 +206,15 @@ func (s *Store) ReplaceMemoryChunks(memoryID string, chunkContents []string, chu
 	return tx.Commit()
 }
 
-// UpdateMemoryFields updates non-chunk memory fields. Pass empty strings to
-// leave a field untouched; pass a single space to clear an optional field.
-// (Type is treated as required: empty string leaves it.)
+// UpdateMemoryFields updates non-chunk fields. Nil leaves optional fields alone;
+// a pointer to an empty string clears them.
 func (s *Store) UpdateMemoryFields(id string, fields MemoryUpdate) error {
+	return updateMemoryFields(s.db, id, fields)
+}
+
+func updateMemoryFields(db interface {
+	Exec(string, ...any) (sql.Result, error)
+}, id string, fields MemoryUpdate) error {
 	var sets []string
 	var args []any
 	if fields.Type != "" {
@@ -235,7 +248,7 @@ func (s *Store) UpdateMemoryFields(id string, fields MemoryUpdate) error {
 	args = append(args, id)
 
 	query := fmt.Sprintf("UPDATE memories SET %s WHERE id = ?", strings.Join(sets, ", "))
-	res, err := s.db.Exec(query, args...)
+	res, err := db.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("updating memory: %w", err)
 	}
@@ -329,7 +342,7 @@ func (s *Store) CountMemories(filter MemoryFilter) (int, error) {
 	return n, err
 }
 
-// SearchMemories runs filtered KNN over the chunk vector index and returns up
+// SearchMemories ranks eligible chunks by vector distance and returns up
 // to `limit` distinct memories ordered by best chunk distance.
 func (s *Store) SearchMemories(embedding []float32, limit int, filter MemoryFilter) ([]MemorySearchResult, error) {
 	if limit <= 0 {
@@ -341,27 +354,25 @@ func (s *Store) SearchMemories(embedding []float32, limit int, filter MemoryFilt
 		return nil, fmt.Errorf("marshaling query embedding: %w", err)
 	}
 
-	// Over-fetch from vec to give the filter+dedup pass room to work.
-	probeK := max(limit*5, 25)
-
+	// Rank all eligible chunks so filtering and memory deduplication cannot
+	// hide matches behind a fixed global KNN candidate limit.
 	query := `
 		SELECT
-			v.distance,
+			vec_distance_L2(v.embedding, ?) AS distance,
 			c.content,
 			m.id, m.name, m.type, m.description, m.body, m.agent, m.source, m.checksum,
 			m.node_id, m.created_at, m.updated_at
 		FROM memories_vec v
 		JOIN memory_chunks c ON v.id = c.id
-		JOIN memories m ON c.memory_id = m.id
-		WHERE v.embedding MATCH ? AND k = ?`
+		JOIN memories m ON c.memory_id = m.id`
 
-	args := []any{string(embJSON), probeK}
+	args := []any{string(embJSON)}
 	if !filter.IsEmpty() {
 		clause, fargs := filter.where("m.")
-		query += " AND " + clause
+		query += " WHERE " + clause
 		args = append(args, fargs...)
 	}
-	query += " ORDER BY v.distance"
+	query += " ORDER BY distance, m.id, c.chunk_index"
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {

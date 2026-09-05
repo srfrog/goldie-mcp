@@ -205,11 +205,8 @@ func (g *Goldie) IndexFile(path, agent string) (*IndexFileResult, error) {
 	if agent != "" {
 		patch.Agent = &agent
 	}
-	if err := g.store.UpdateMemoryFields(existing.ID, patch); err != nil {
+	if err := g.store.UpdateMemoryWithChunks(existing.ID, patch, chunks, embeddings); err != nil {
 		return nil, fmt.Errorf("updating file memory: %w", err)
-	}
-	if err := g.store.ReplaceMemoryChunks(existing.ID, chunks, embeddings); err != nil {
-		return nil, fmt.Errorf("replacing chunks: %w", err)
 	}
 	return &IndexFileResult{
 		MemoryID:   existing.ID,

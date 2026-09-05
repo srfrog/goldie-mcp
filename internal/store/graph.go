@@ -1804,12 +1804,14 @@ func (s *Store) EnqueueGraphHarvestIfNeeded() error {
 }
 
 func enqueueGraphHarvestTx(tx *sql.Tx) error {
+	// A running harvest may already have read its snapshot. Keep one queued
+	// successor for subsequent writes, and coalesce further writes into it.
 	var existing int
 	err := tx.QueryRow(`
 		SELECT COUNT(*)
 		FROM jobs
-		WHERE type = ? AND status IN (?, ?)
-	`, JobTypeGraphHarvest, JobStatusQueued, JobStatusProcessing).Scan(&existing)
+		WHERE type = ? AND status = ?
+	`, JobTypeGraphHarvest, JobStatusQueued).Scan(&existing)
 	if err != nil {
 		return fmt.Errorf("checking graph harvest jobs: %w", err)
 	}

@@ -140,6 +140,31 @@ func TestAddMemoryEnqueuesGraphHarvestWithoutRunningIt(t *testing.T) {
 	}
 }
 
+func TestWritesDuringHarvestQueueOneSuccessor(t *testing.T) {
+	st := newTestStore(t)
+	addTestMemory(t, st, "acme_cloud_auth")
+	job, err := st.GetNextPendingJob()
+	if err != nil || job == nil {
+		t.Fatalf("claim harvest: %v, %v", job, err)
+	}
+	if err := st.RefreshHarvestedConcepts(); err != nil {
+		t.Fatal(err)
+	}
+	addTestMemory(t, st, "acme_cloud_pricing")
+	addTestMemory(t, st, "acme_cloud_settings")
+	jobs, err := st.ListJobs(JobStatusQueued)
+	if err != nil || len(jobs) != 1 || jobs[0].Type != JobTypeGraphHarvest {
+		t.Fatalf("expected one queued successor, got %+v, %v", jobs, err)
+	}
+	if err := st.UpdateJobResult(job.ID, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := st.GetNextPendingJob()
+	if err != nil || next == nil || next.ID != jobs[0].ID {
+		t.Fatalf("successor not claimable: %+v, %v", next, err)
+	}
+}
+
 func TestDeleteMemoryRemovesMemoryNode(t *testing.T) {
 	st := newTestStore(t)
 

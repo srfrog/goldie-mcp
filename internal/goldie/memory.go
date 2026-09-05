@@ -117,23 +117,25 @@ func (g *Goldie) UpdateMemory(idOrName string, in UpdateMemoryInput) (*store.Mem
 		Source:      in.Source,
 		Agent:       in.Agent,
 	}
-	if err := g.store.UpdateMemoryFields(existing.ID, patch); err != nil {
-		return nil, fmt.Errorf("updating memory: %w", err)
-	}
-
 	if in.Description != nil || in.Body != nil {
-		updated, err := g.store.GetMemory(existing.ID)
+		body, description := existing.Body, existing.Description
+		if in.Body != nil {
+			body = *in.Body
+		}
+		if in.Description != nil {
+			description = *in.Description
+		}
+		patch.Body, patch.Description = &body, &description
+		chunks := g.chunkText(body)
+		embeddings, err := g.embedChunks(existing.Name, description, chunks)
 		if err != nil {
 			return nil, err
 		}
-		chunks := g.chunkText(updated.Body)
-		embeddings, err := g.embedChunks(updated.Name, updated.Description, chunks)
-		if err != nil {
+		if err := g.store.UpdateMemoryWithChunks(existing.ID, patch, chunks, embeddings); err != nil {
 			return nil, err
 		}
-		if err := g.store.ReplaceMemoryChunks(updated.ID, chunks, embeddings); err != nil {
-			return nil, err
-		}
+	} else if err := g.store.UpdateMemoryFields(existing.ID, patch); err != nil {
+		return nil, fmt.Errorf("updating memory: %w", err)
 	}
 	if err := g.applyHints(existing.ID, in.Hints); err != nil {
 		return nil, err

@@ -374,7 +374,7 @@ Import every matching file in a directory as `reference` memories.
 
 ### job_status, list_jobs, clear_queue
 
-Manage the async job queue. File indexing, graph harvest, and graph backfill jobs complete in the background; use `job_status` to check progress.
+Manage the async job queue. File indexing, graph harvest, and graph backfill jobs complete in the background; use `job_status` to check progress. `list_jobs` returns the newest jobs first, capped by `limit` (default 50, max 500), and reports the `total` matching count.
 
 ## Skip Patterns
 

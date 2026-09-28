@@ -116,7 +116,7 @@ func TestAddMemoryEnqueuesGraphHarvestWithoutRunningIt(t *testing.T) {
 
 	addTestMemory(t, st, "acme_cloud_auth")
 
-	jobs, err := st.ListJobs(JobStatusQueued)
+	jobs, err := st.ListJobs(JobStatusQueued, 0)
 	if err != nil {
 		t.Fatalf("ListJobs failed: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestWritesDuringHarvestQueueOneSuccessor(t *testing.T) {
 	}
 	addTestMemory(t, st, "acme_cloud_pricing")
 	addTestMemory(t, st, "acme_cloud_settings")
-	jobs, err := st.ListJobs(JobStatusQueued)
+	jobs, err := st.ListJobs(JobStatusQueued, 0)
 	if err != nil || len(jobs) != 1 || jobs[0].Type != JobTypeGraphHarvest {
 		t.Fatalf("expected one queued successor, got %+v, %v", jobs, err)
 	}
@@ -231,7 +231,7 @@ func TestEnqueueGraphBackfillIfNeeded(t *testing.T) {
 		t.Fatalf("EnqueueGraphBackfillIfNeeded failed: %v", err)
 	}
 
-	jobs, err := st.ListJobs(JobStatusQueued)
+	jobs, err := st.ListJobs(JobStatusQueued, 0)
 	if err != nil {
 		t.Fatalf("ListJobs failed: %v", err)
 	}

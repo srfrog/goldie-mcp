@@ -207,7 +207,7 @@ func waitForGraphHarvest(t *testing.T, ts *TestSetup) {
 	ts.Queue.Start()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		jobs, err := ts.Store.ListJobs("")
+		jobs, err := ts.Store.ListJobs("", 0)
 		if err != nil {
 			t.Fatalf("ListJobs failed: %v", err)
 		}
@@ -232,7 +232,7 @@ func waitForGraphHarvest(t *testing.T, ts *TestSetup) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	jobs, err := ts.Store.ListJobs("")
+	jobs, err := ts.Store.ListJobs("", 0)
 	if err != nil {
 		t.Fatalf("ListJobs failed: %v", err)
 	}
@@ -1138,5 +1138,36 @@ func TestMCP_IndexFileReindexesOnChange(t *testing.T) {
 	}
 	if m.Body != "v2 with new content" {
 		t.Errorf("expected updated body, got %q", m.Body)
+	}
+}
+
+func TestListJobsLimit(t *testing.T) {
+	ts := NewTestSetup(t)
+	defer ts.Cleanup()
+	ts.SetupGlobals()
+
+	for _, id := range []string{"job-a", "job-b", "job-c", "job-d", "job-e"} {
+		if err := ts.Store.CreateJob(id, store.JobTypeIndexFile, "{}"); err != nil {
+			t.Fatalf("CreateJob failed: %v", err)
+		}
+	}
+
+	resp := ts.CallTool(t, "list_jobs", map[string]any{"limit": float64(2)})
+	if got := int(resp["count"].(float64)); got != 2 {
+		t.Errorf("count = %d, want 2", got)
+	}
+	if got := int(resp["total"].(float64)); got != 5 {
+		t.Errorf("total = %d, want 5", got)
+	}
+	if jobs := resp["jobs"].([]any); len(jobs) != 2 {
+		t.Errorf("len(jobs) = %d, want 2", len(jobs))
+	}
+
+	resp = ts.CallTool(t, "list_jobs", map[string]any{})
+	if got := int(resp["count"].(float64)); got != 5 {
+		t.Errorf("default count = %d, want 5", got)
+	}
+	if got := int(resp["total"].(float64)); got != 5 {
+		t.Errorf("default total = %d, want 5", got)
 	}
 }

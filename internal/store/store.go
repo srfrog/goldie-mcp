@@ -198,22 +198,24 @@ func (s *Store) WaitForJob(id string, timeout time.Duration) (*Job, error) {
 	return s.GetJob(id)
 }
 
-// ListJobs returns jobs, optionally filtered by status.
-func (s *Store) ListJobs(status string) ([]Job, error) {
-	var rows *sql.Rows
-	var err error
-
-	if status == "" {
-		rows, err = s.db.Query(`
-			SELECT id, type, status, params, result, error, progress, total, parent_id, created_at, updated_at
-			FROM jobs ORDER BY created_at DESC
-		`)
-	} else {
-		rows, err = s.db.Query(`
-			SELECT id, type, status, params, result, error, progress, total, parent_id, created_at, updated_at
-			FROM jobs WHERE status = ? ORDER BY created_at DESC
-		`, status)
+// ListJobs returns jobs, newest first, optionally filtered by status.
+// A limit <= 0 returns all matching jobs.
+func (s *Store) ListJobs(status string, limit int) ([]Job, error) {
+	query := `
+		SELECT id, type, status, params, result, error, progress, total, parent_id, created_at, updated_at
+		FROM jobs`
+	var args []any
+	if status != "" {
+		query += " WHERE status = ?"
+		args = append(args, status)
 	}
+	query += " ORDER BY created_at DESC"
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying jobs: %w", err)
 	}
@@ -374,6 +376,21 @@ func (s *Store) GetNextPendingJob() (*Job, error) {
 
 	job.Status = JobStatusProcessing
 	return &job, nil
+}
+
+// CountJobs returns the number of jobs, optionally filtered by status.
+func (s *Store) CountJobs(status string) (int, error) {
+	var count int
+	var err error
+	if status == "" {
+		err = s.db.QueryRow("SELECT COUNT(*) FROM jobs").Scan(&count)
+	} else {
+		err = s.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE status = ?", status).Scan(&count)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("counting jobs: %w", err)
+	}
+	return count, nil
 }
 
 // DeleteJobs removes jobs by status, or all jobs if status is "all".

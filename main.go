@@ -378,6 +378,7 @@ func registerTools(s *server.MCPServer) {
 		mcp.NewTool("list_jobs",
 			mcp.WithDescription("List indexing jobs, optionally filtered by status"),
 			mcp.WithString("status", mcp.Description("queued, processing, completed, failed")),
+			mcp.WithNumber("limit", mcp.Description("Maximum jobs to return, newest first (default: 50, max: 500)")),
 		),
 		handleListJobs,
 	)
@@ -1061,8 +1062,10 @@ func handleJobStatus(_ context.Context, request mcp.CallToolRequest) (*mcp.CallT
 }
 
 func handleListJobs(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	status := argString(request.Params.Arguments, "status")
-	jobs, err := storeInstance.ListJobs(status)
+	args := request.Params.Arguments
+	status := argString(args, "status")
+	limit := max(min(argInt(args, "limit", 50), 500), 1)
+	jobs, err := storeInstance.ListJobs(status, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("listing jobs failed: %v", err)), nil
 	}
@@ -1072,15 +1075,34 @@ func handleListJobs(_ context.Context, request mcp.CallToolRequest) (*mcp.CallTo
 		}
 		return mcp.NewToolResultText(formatMessage("No jobs found")), nil
 	}
-	msg := formatMessage("Found %d job(s)", len(jobs))
-	if status != "" {
-		msg = formatMessage("Found %d job(s) with status %q", len(jobs), status)
+	total := len(jobs)
+	if len(jobs) == limit {
+		if total, err = storeInstance.CountJobs(status); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("counting jobs failed: %v", err)), nil
+		}
 	}
+	msg := fmt.Sprintf("Found %d job(s)", total)
+	if status != "" {
+		msg = fmt.Sprintf("Found %d job(s) with status %q", total, status)
+	}
+	if total > len(jobs) {
+		msg += fmt.Sprintf("; showing the newest %d", len(jobs))
+	}
+	msg = formatMessage("%s", msg)
 	return mcp.NewToolResultText(safeJSONMarshal(map[string]any{
 		"count":   len(jobs),
+		"total":   total,
 		"jobs":    jobs,
 		"message": msg,
 	})), nil
+}
+
+// clearableJobStatuses are the status values accepted by clear_queue.
+var clearableJobStatuses = map[string]bool{
+	"queued":    true,
+	"completed": true,
+	"failed":    true,
+	"all":       true,
 }
 
 func handleClearQueue(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1088,13 +1110,7 @@ func handleClearQueue(_ context.Context, request mcp.CallToolRequest) (*mcp.Call
 	if status == "" {
 		return mcp.NewToolResultError("status is required (queued, completed, failed, or all)"), nil
 	}
-	validStatuses := map[string]bool{
-		"queued":    true,
-		"completed": true,
-		"failed":    true,
-		"all":       true,
-	}
-	if !validStatuses[status] {
+	if !clearableJobStatuses[status] {
 		return mcp.NewToolResultError("invalid status: must be queued, completed, failed, or all"), nil
 	}
 	count, err := storeInstance.DeleteJobs(status)

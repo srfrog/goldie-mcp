@@ -31,6 +31,9 @@ jobs:
         with:
           lfs: true
 
+      - name: Verify ONNX model
+        run: make check-model
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
